@@ -1,0 +1,85 @@
+/* static/style.css */
+
+/* Add any custom CSS overrides or styles here if needed. */
+/* Tailwind handles most styling via classes in the HTML. */
+
+/* Example: Customize scrollbar for Firefox */
+body {
+    scrollbar-width: thin;
+    scrollbar-color: #5f6368 transparent; /* thumb track */
+}
+
+/* Ensure textarea doesn't have extra bottom margin/padding pushing layout */
+textarea {
+    vertical-align: bottom;
+}
+
+/* Ensure file preview area doesn't collapse when empty */
+#file-preview-area:empty {
+    display: none; /* Hide if empty */
+}
+#file-preview-area:not(:empty) {
+     margin-bottom: 0.5rem; /* Add margin only when it has content */
+     padding-top: 0.25rem; /* Add some padding above previews */
+}
+
+/* Typing indicator animation */
+.typing-dot {
+    width: 6px;
+    height: 6px;
+    background-color: currentColor; /* Inherits color from parent text */
+    border-radius: 50%;
+    display: inline-block;
+    margin: 0 1px;
+    /* Animation */
+    animation-name: typing-bounce;
+    animation-duration: 1.2s;
+    animation-iteration-count: infinite;
+    animation-timing-function: ease-in-out;
+}
+
+.typing-dot:nth-child(1) { animation-delay: -0.32s; }
+.typing-dot:nth-child(2) { animation-delay: -0.16s; }
+.typing-dot:nth-child(3) { animation-delay: 0s; }
+
+@keyframes typing-bounce {
+  0%, 80%, 100% {
+    transform: scale(0);
+  }
+  40% {
+    transform: scale(1.0);
+  }
+}
+
+/* Basic styling for the details/summary */
+details > summary {
+    list-style: none; /* Remove default marker */
+    cursor: pointer;
+}
+details > summary::-webkit-details-marker {
+    display: none; /* Hide default marker in WebKit */
+}
+/* Optional: Add a custom marker */
+details > summary::before {
+    content: '▶'; /* Collapsed state */
+    display: inline-block;
+    font-size: 0.7em;
+    margin-right: 0.4em;
+    transition: transform 0.2s ease-in-out;
+}
+details[open] > summary::before {
+    transform: rotate(90deg); /* Expanded state */
+}
+/* Style the content area within details */
+details > div {
+    margin-top: 0.5rem; /* space above content */
+    padding: 0.5rem 0.75rem; /* padding inside content */
+    border-radius: 0.375rem; /* rounded-md */
+    /* Background is set via Tailwind classes in JS */
+}
+/* Style list inside details */
+details > div ul {
+    list-style-type: disc; /* Example list style */
+    padding-left: 1.5rem; /* Indent list items */
+}
+
