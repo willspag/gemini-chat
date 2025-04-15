@@ -215,48 +215,51 @@ def get_chat_session(session_id, model_name, temperature, max_tokens, enabled_to
     if not genai_client: raise ConnectionError("GenAI client not initialized.")
     current_time = datetime.now(timezone.utc)
 
-    if session_id in CHAT_SESSIONS:
+    if session_id in CHAT_SESSIONS.keys():
+        logging.info(f"\n\n\nReusing existing chat session for ID: {session_id}\n\n\n") # Less verbose
         # TODO: Ideally, check if model_name or enabled_tool_name differs from stored session
         # and potentially recreate the chat if they do. For now, just reuse.
         # logging.info(f"Reusing existing chat session for ID: {session_id}") # Less verbose
-        chat = CHAT_SESSIONS[session_id]
+        chat_session = CHAT_SESSIONS[session_id]
         SESSION_TIMESTAMPS[session_id] = current_time # Update last access time
-        return chat
-
-    # --- Create New Chat Session ---
-    # Initialize history store for the new session
-    CHAT_HISTORIES[session_id] = []
-    logging.info(f"Creating new chat session for ID: {session_id} with model {model_name}, temp={temperature}, tokens={max_tokens}, tool='{enabled_tool_name}'")
-
-    # Determine which tools to enable for this new session
-    active_tools = []
-    if enabled_tool_name == 'search':
-        active_tools.append(google_search_tool)
-        logging.info("Enabling Google Search tool for new session.")
-    elif enabled_tool_name == 'code':
-        # Ensure code execution tool is only added if available/enabled
-        active_tools.append(code_execution_tool)
-        logging.info("Enabling Code Execution tool for new session.")
+        CHAT_HISTORIES[session_id] = chat_session.get_history()
+        return chat_session
     else:
-        logging.info("No tools enabled for new session.")
+        logging.info(f"\n\n\nCreating new chat session for ID: {session_id}\n\n\n") # Less verbose
+        # --- Create New Chat Session ---
+        # Initialize history store for the new session
+        logging.info(f"Creating new chat session for ID: {session_id} with model {model_name}, temp={temperature}, tokens={max_tokens}, tool='{enabled_tool_name}'")
 
-    try:
-        chat = genai_client.chats.create(
-            model=model_name,
-            config=types.GenerateContentConfig(
-                tools=active_tools,
-                temperature=temperature,
-                max_output_tokens=max_tokens
-            ),
-            history=[],
-        )
-        CHAT_SESSIONS[session_id] = chat
-        SESSION_TIMESTAMPS[session_id] = current_time
-        logging.info(f"Successfully created new chat session {session_id}")
-        return chat
-    except Exception as e:
-        logging.error(f"Failed to create new chat session {session_id}: {e}\n{traceback.format_exc()}")
-        raise ConnectionError(f"Failed to initialize chat session with the model: {e}")
+        # Determine which tools to enable for this new session
+        active_tools = []
+        if enabled_tool_name == 'search':
+            active_tools.append(google_search_tool)
+            logging.info("Enabling Google Search tool for new session.")
+        elif enabled_tool_name == 'code':
+            # Ensure code execution tool is only added if available/enabled
+            active_tools.append(code_execution_tool)
+            logging.info("Enabling Code Execution tool for new session.")
+        else:
+            logging.info("No tools enabled for new session.")
+
+        try:
+            chat_session = genai_client.chats.create(
+                model=model_name,
+                config=types.GenerateContentConfig(
+                    tools=active_tools,
+                    temperature=temperature,
+                    max_output_tokens=max_tokens
+                ),
+                history=[],
+            )
+            CHAT_SESSIONS[session_id] = chat_session
+            CHAT_HISTORIES[session_id] = chat_session.get_history()
+            SESSION_TIMESTAMPS[session_id] = current_time
+            logging.info(f"Successfully created new chat session {session_id}")
+            return chat_session
+        except Exception as e:
+            logging.error(f"Failed to create new chat session {session_id}: {e}\n{traceback.format_exc()}")
+            raise ConnectionError(f"Failed to initialize chat session with the model: {e}")
 
 
 def cleanup_old_sessions():
@@ -408,6 +411,9 @@ def chat_endpoint():
         logging.debug(f"Sending message to chat session {session_id} with {len(current_turn_parts)} parts.") # Use debug level
         response = chat_session.send_message(current_turn_parts) # No config needed here
         logging.debug(f"Received response from chat session {session_id}") # Use debug level
+        
+        # Update the chat session with the response
+        CHAT_SESSIONS[session_id] = chat_session
 
         # --- Process Response ---
         processed_response_parts = []
