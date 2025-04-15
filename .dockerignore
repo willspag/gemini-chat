@@ -1,0 +1,12 @@
+.env
+
+secrets/
+
+uploads/
+
+tmp.py
+
+gemini_tutorials/
+
+.gitignore
+

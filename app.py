@@ -86,6 +86,11 @@ def clear_directory(dir_path):
             logging.error(f'Failed to delete {file_path}. Reason: {e}')
     logging.info(f"Finished clearing directory: {dir_path}")
 
+def get_part_token_count(model_to_use, part):
+    response = genai_client.models.count_tokens(model=model_to_use, contents=part)
+    token_count = response.total_tokens
+    logging.debug(f"\n\n\n[Count Tokens Debug] Token count is {token_count} for part: {part}")
+    return token_count
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -354,7 +359,7 @@ def chat_endpoint():
                     try:
                         gcs_uri = upload_to_gcs(local_filepath, gcs_blob_name)
                         # Use types.File as requested
-                        current_turn_parts.append(types.File(uri=gcs_uri, mime_type=mime_type))
+                        current_turn_parts.append(types.Part.from_uri(file_uri=gcs_uri, mime_type=mime_type))
                         processed_files_info.append({"local": local_filepath, "gcs": gcs_uri})
                         logging.info(f"Processed upload: {filename} -> {gcs_uri}")
                     except Exception as upload_err:
@@ -369,7 +374,7 @@ def chat_endpoint():
                     logging.warning(f"File type not allowed: {file.filename}")
                 upload_error_occurred = True
 
-        if text_prompt: current_turn_parts.append(text_prompt)
+        if text_prompt: current_turn_parts.append(types.Part(text=text_prompt))
 
         if not current_turn_parts:
              for path in local_temp_files:
@@ -391,32 +396,13 @@ def chat_endpoint():
             logging.error(f"Chat session is None for session ID: {session_id}. Cannot send message.")
             return jsonify({"error": "Chat session initialization failed previously. Please start a new chat."}), 500
 
-        # --- Add User Turn to History BEFORE sending --- (Use the original parts)
-        # Convert all parts in current_turn_parts to actual Part objects for history
-        history_parts = []
-        for item in current_turn_parts:
-            if isinstance(item, str):
-                history_parts.append(Part(text=item))
-            elif isinstance(item, types.File):
-                 # Check if File object has necessary attributes (uri, mime_type)
-                 if hasattr(item, 'uri') and hasattr(item, 'mime_type'):
-                     # Create a Part containing the File object via file_data
-                     # Note: The SDK might prefer wrapping File directly if supported,
-                     # but file_data is explicitly documented for Content parts.
-                     # Let's try wrapping directly first as it's simpler.
-                     history_parts.append(Part(file_data=item))
-                 else:
-                     logging.warning(f"Skipping invalid File object in history: {item}")
-            else:
-                 # Handle other potential types or log warning
-                 logging.warning(f"Skipping unknown type in current_turn_parts for history: {type(item)}")
-
-        if history_parts: # Only add if there are valid parts
-            user_content = Content(role="user", parts=history_parts)
+        if len(current_turn_parts) > 0: # Only add if there are valid parts
+            user_content = Content(role="user", parts=current_turn_parts)
             CHAT_HISTORIES[session_id].append(user_content)
             # print(f"[Chat] Added user turn to history: {user_content}") # Debug
         else:
             logging.warning("No valid user parts generated for history.")
+            return jsonify({"error": "No message content received."}), 400
 
         # --- Send to Model --- (Config is part of chat_session now)
         logging.debug(f"Sending message to chat session {session_id} with {len(current_turn_parts)} parts.") # Use debug level
@@ -440,6 +426,8 @@ def chat_endpoint():
                     # --- Add Model Turn to History --- (Do this early)
                     if candidate.content:
                         CHAT_HISTORIES[session_id].append(candidate.content)
+                        logging.debug(f"[Chat] Added model turn to history: {candidate.content}") # Debug level
+                        logging.debug(f"[Chat] Added model turn to history (parts): {candidate.content.parts}") # Debug level
                         # print(f"[Chat] Added model turn to history: {candidate.content}") # Debug
                     # Check if content and parts exist before logging length
                     if candidate.content and candidate.content.parts:
@@ -448,7 +436,10 @@ def chat_endpoint():
                             logging.debug(f"Part {i}: Type={type(part)}") # Debug level
                             part_attrs = {attr: repr(getattr(part, attr, 'N/A')) for attr in ['text', 'inline_data', 'executable_code', 'code_execution_result', 'function_call'] if hasattr(part, attr)}
                             logging.debug(f"Part {i} Attributes: {part_attrs}") # Debug level
-                            if hasattr(part, 'inline_data') and part.inline_data: logging.debug(f"Part {i} Inline Data: MimeType={getattr(part.inline_data, 'mime_type', 'N/A')}, Data Length={len(getattr(part.inline_data, 'data', b''))} bytes") # Debug level
+                            if hasattr(part, 'inline_data') and part.inline_data:
+                                logging.debug(f"Part {i} Inline Data: MimeType={getattr(part.inline_data, 'mime_type', 'N/A')}, Data Length={len(getattr(part.inline_data, 'data', b''))} bytes") # Debug level
+                            if hasattr(part, 'text'): logging.debug(f"Part {i} Text: {part.text}") # Debug level
+                            if hasattr(part, 'executable_code'): logging.debug(f"Part {i} Executable Code: {part.executable_code}") # Debug level
                     else:
                         logging.debug("--- Candidate content or parts are missing/empty. --- ") # Debug level
 
@@ -692,13 +683,25 @@ def count_tokens_endpoint():
         # 1. Get existing history from our manual store and extract all parts
         all_parts = []
         if session_id and session_id in CHAT_HISTORIES:
+            raw_history = CHAT_HISTORIES[session_id]
+            logging.debug(f"[Count Tokens Debug] Raw History Retrieved ({len(raw_history)} items):")
+            for i, content_item in enumerate(raw_history):
+                logging.debug(f"  History Item {i}: Type={type(content_item)}, Content={content_item!r}")
             for content in CHAT_HISTORIES[session_id]:
-                all_parts.extend(content)
-                    
+                logging.debug(f"  Processing history Content object: {content!r}")
+                all_parts.extend(content.parts)
+                contents_to_count.append(content)
+            logging.debug(f"[Count Tokens Debug] all_parts after processing history ({len(all_parts)} items):")
+            for i, part_item in enumerate(all_parts):
+                logging.debug(f"  Part {i}: Type={type(part_item)}, Content={part_item!r}")
+
+        logging.debug(f"[Count Tokens Debug] all_parts after processing history ({len(all_parts)} items):")
+        for i, part_item in enumerate(all_parts):
+            logging.debug(f"  Part {i}: Type={type(part_item)}, Content={part_item!r}")
 
         # 2. Process pending text and files
         if pending_text:
-            all_parts.append(pending_text)
+            all_parts.append(types.Part(text=pending_text))
 
         if pending_files:
             os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -713,17 +716,24 @@ def count_tokens_endpoint():
                         gcs_blob_name = f"temp_token_count/{session_id or 'no_session'}/{uuid.uuid4()}_{temp_local_filename}"
                         gcs_temp_blobs_to_clean.append(gcs_blob_name)
                         gcs_uri = upload_to_gcs(local_filepath, gcs_blob_name)
-                        file_part = types.File(uri=gcs_uri, mime_type=mime_type)
+                        file_part = types.Part.from_uri(file_uri=gcs_uri, mime_type=mime_type)
                         all_parts.append(file_part)
+                        logging.debug(f"[Count Tokens Debug] Appended pending File: {file_part!r}")
                     except Exception as upload_err:
                         logging.error(f"Error processing file {file.filename} for token count: {upload_err}")
                         continue
                 elif file:
                     logging.warning(f"Skipping disallowed file type for token count: {file.filename}")
 
+        logging.debug(f"[Count Tokens Debug] all_parts after adding pending text/files ({len(all_parts)} items):")
+        for i, part_item in enumerate(all_parts):
+            logging.debug(f"  Part {i}: Type={type(part_item)}, Content={part_item!r}")
+
         # 3. Create a Content object with all parts for token counting
         if len(all_parts) == 0:
             return jsonify({"total_tokens": 0})
+        else:
+            contents_to_count.append(types.Content(parts=all_parts))
 
         # 5. Determine model to use
         model_to_use = DEFAULT_MODEL_NAME
@@ -731,23 +741,68 @@ def count_tokens_endpoint():
 
         # 6. Call count_tokens API (genai_client.models.compute_tokens)
         try:
-            response = genai_client.models.count_tokens(model=model_to_use, contents=all_parts)
-            # Get the total token count from the response
-            token_count = response.total_tokens
-            logging.info(f"[count_tokens] Total token count: {token_count}")
-            return jsonify({"total_tokens": token_count})
+            logging.debug(f"[Count Tokens Debug] Final all_parts ({len(all_parts)} items) being sent to API:")
+           
+            for i, item in enumerate(all_parts):
+                try: logging.debug(f"  Item {i}: Type={type(item)}, Content={item!r}")
+                except Exception as repr_err: logging.debug(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
+            logging.debug(f"\n\n\n[Count Tokens Debug] Final contents_to_count ({len(contents_to_count)} items) being sent to API:")
+            for i, item in enumerate(contents_to_count):
+                try: logging.debug(f"\n\n\n  Item {i}: Type={type(item)}, Content={item!r}")
+                except Exception as repr_err: logging.debug(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
+            #response = genai_client.models.count_tokens(model=model_to_use, contents=contents_to_count)
+            total_token_count = 0
+            for part in all_parts:
+                logging.debug(f"\n\n\n[Count Tokens Debug] Counting tokens for part: {part!r}")
+                token_count = get_part_token_count(model_to_use=model_to_use, part=part)
+                total_token_count += token_count
+                logging.debug(f"[Count Tokens Debug] Successfully counted {token_count} tokens for part: {part!r}")
+                logging.info(f"[count_tokens] Current total token count: {total_token_count}\n\n\n")
+            return jsonify({"total_tokens": total_token_count})
         except Exception as e_primary:
             logging.warning(f"Token count failed for model '{model_to_use}': {e_primary}. Trying fallback '{fallback_model}'.")
+            # --- Enhanced Error Logging --- Start
+            logging.error(f"Exception Type (Primary): {type(e_primary)}")
+            logging.error(f"Exception Args (Primary): {e_primary.args}")
+            logging.error(f"Traceback (Primary):\n{traceback.format_exc()}")
+            logging.error(f"[Count Tokens Debug] Failed with all_parts ({len(all_parts)} items):")
+            
+            for i, item in enumerate(all_parts):
+                 try: logging.error(f"  Item {i}: Type={type(item)}, Content={item!r}")
+                 except Exception as repr_err: logging.error(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
+            
+            logging.error(f"\n\n\n[Count Tokens Debug] Failed with contents_to_count ({len(contents_to_count)} items):")
+            for i, item in enumerate(contents_to_count):
+                 try: logging.error(f"  Item {i}: Type={type(item)}, Content={item!r}")
+                 except Exception as repr_err: logging.error(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
+            # --- Enhanced Error Logging --- End
             try:
-                response = genai_client.models.count_tokens(model=fallback_model, contents=all_parts)
+                #response = genai_client.models.count_tokens(model=fallback_model, contents=contents_to_count)
                 # Get the total token count from the response
-                token_count = response.total_tokens
+                #token_count = response.total_tokens
+                token_count = 0
+                for part in all_parts:
+                    token_count += get_part_token_count(model_to_use=fallback_model, part=part)
                 logging.info(f"[count_tokens] Total token count: {token_count}")
                 return jsonify({"total_tokens": token_count})
             except Exception as e_fallback:
                 logging.error(f"Token count failed for fallback model '{fallback_model}': {e_fallback}")
+                # --- Enhanced Error Logging --- Start
+                logging.error(f"Exception Type (Fallback): {type(e_fallback)}")
+                logging.error(f"Exception Args (Fallback): {e_fallback.args}")
+                logging.error(f"Traceback (Fallback):\n{traceback.format_exc()}")
+                logging.error(f"[Count Tokens Debug] Failed with all_parts ({len(all_parts)} items):")
+                
+                for i, item in enumerate(all_parts):
+                    try: logging.error(f"  Item {i}: Type={type(item)}, Content={item!r}")
+                    except Exception as repr_err: logging.error(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
+                logging.error(f"\n\n\n[Count Tokens Debug] Failed with contents_to_count ({len(contents_to_count)} items):")
+                for i, item in enumerate(contents_to_count):
+                    try: logging.error(f"\n\n\n  Item {i}: Type={type(item)}, Content={item!r}")
+                    except Exception as repr_err: logging.error(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
+                # --- Enhanced Error Logging --- End
                 return jsonify({"error": "Token counting failed for primary and fallback models."}), 500
-        
+ 
     finally:
         # --- Cleanup Temporary Files ---
         for local_path in local_temp_files_to_clean:

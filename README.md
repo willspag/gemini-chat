@@ -13,21 +13,27 @@ This application provides a user-friendly interface with features like file uplo
 * **Vertex AI Integration:** Communicates with specified Gemini models via the Vertex AI API.
 * **Data Privacy:** Leverages Vertex AI's data governance, ensuring inputs are not used for training Google's models.
 * **Web Interface:** Responsive chat UI built with Flask, HTML, CSS (Tailwind), and JavaScript.
-* **Multimodal Input:** Supports uploading various file types (images, text, code, PDF etc.) alongside text prompts.
+* **Multimodal Input:** Supports uploading various file types (images, text, code, PDF etc.) alongside text prompts via Google Cloud Storage.
+* **Tool Usage:** Supports enabling Google Search or Code Execution tools for enhanced responses.
+* **Grounding & Citations:** Displays web search queries, source citations, and related search suggestions when available from the model (requires Google Search tool to be enabled).
 * **Markdown Rendering:** Displays model responses formatted in Markdown.
 * **Code Block Enhancements:** Includes syntax highlighting (via highlight.js) and a copy button for code blocks.
-* **Configurable Settings:** UI modal allows changing the target Gemini model, temperature, and maximum output tokens per session (stored in localStorage).
+* **Configurable Settings:** UI modal allows changing the target Gemini model, temperature, maximum output tokens, and enabled tool per session (stored in localStorage).
+* **Token Counting:** Displays an estimated token count for the current chat history plus pending input (text and files) in the footer.
 * **Password Protection:** Optional password protection via an environment variable to restrict access.
-* **New Chat:** Button to clear the current chat interface.
+* **New Chat:** Button to clear the current chat interface and server-side history.
 
 ## Prerequisites
 
 * **Python:** Version 3.10 or higher.
 * **Google Cloud Account:** A Google Cloud Platform project with billing enabled.
-* **Enabled APIs:** Ensure the **Vertex AI API** is enabled in your Google Cloud project. For deployment, you'll also need **Artifact Registry API** and **Cloud Run API** enabled.
+* **Enabled APIs:** Ensure the **Vertex AI API** and **Cloud Storage API** are enabled in your Google Cloud project. For deployment, you'll also need **Artifact Registry API** and **Cloud Run API** enabled.
+* **Google Cloud Storage Bucket:** A GCS bucket is required for temporary file uploads used in multimodal prompts and token counting.
 * **`gcloud` CLI:** The Google Cloud command-line tool installed and initialized. [Installation Guide](https://cloud.google.com/sdk/docs/install)
-* **Authentication:** Application Default Credentials (ADC) configured for your local environment or appropriate service account credentials for deployment.
-* **Docker:** Docker installed locally for building the container image. [Installation Guide](https://docs.docker.com/engine/install/)
+* **Authentication:**
+  * **Local:** Application Default Credentials (ADC) configured for your local environment (via `gcloud auth application-default login`). The application also needs permissions to interact with Vertex AI and the specified GCS Bucket (e.g., roles/storage.objectAdmin on the bucket).
+  * **Cloud Run:** A service account with appropriate permissions (e.g., roles/aiplatform.user, roles/storage.objectAdmin) attached to the Cloud Run service.
+* **Docker:** Docker installed locally for building the container image for deployment. [Installation Guide](https://docs.docker.com/engine/install/)
 
 ## Local Setup & Usage
 
@@ -49,11 +55,18 @@ This application provides a user-friendly interface with features like file uplo
 
     ```plaintext
     # .env Example
-    # Required: Google Cloud Project ID
+    # Required: Google Cloud Project ID (Can also be auto-detected if gcloud is configured)
     GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 
+    # Required: Google Cloud Storage Bucket Name (for file uploads)
+    GCLOUD_BUCKET_NAME=your-gcs-bucket-name
+
+    # Required: Flask Secret Key (generate a strong random key)
+    # Example generation: python -c 'import secrets; print(secrets.token_hex(16))'
+    FLASK_SECRET_KEY="your-very-secret-key-change-this"
+
     # Optional: Google Cloud Location (defaults to us-central1 if not set)
-    GOOGLE_CLOUD_LOCATION=us-central1
+    # GOOGLE_CLOUD_LOCATION=us-central1
 
     # Optional: Default Gemini AI Model Name (overridable via UI settings)
     # Defaults to gemini-2.5-pro-preview-03-25 if not set
@@ -63,16 +76,21 @@ This application provides a user-friendly interface with features like file uplo
     # Defaults to 20000 if not set (valid range 2048-65536)
     # MAX_OUTPUT_TOKENS=20000
 
-    # Required: Flask Secret Key (generate a strong random key)
-    # Example generation: python -c 'import secrets; print(secrets.token_hex(16))'
-    FLASK_SECRET_KEY="your-very-secret-key-change-this"
-
-    # Optional: Directory for temporary file uploads (defaults to 'uploads')
+    # Optional: Directory for temporary local file uploads (defaults to 'uploads')
     # UPLOAD_FOLDER="uploads"
 
     # Optional: Password to access the chat application (leave unset for no password)
     # IMPORTANT: For production, use Cloud Run secrets/env vars, not this file.
     # CHAT_PASSWORD="your_secret_password"
+
+    # Optional: Set to TRUE to force Vertex AI usage (default is TRUE)
+    # GOOGLE_GENAI_USE_VERTEXAI=TRUE
+
+    # Optional: Path to a service account key JSON file (if not using ADC)
+    # GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/service-account-key.json
+
+    # Optional: Service Account Info as JSON string (alternative to file path)
+    # GOOGLE_CLOUD_SERVICE_ACCOUNT_INFO_JSON='{"type": "service_account", ...}'
     ```
 
 4.  **Install Dependencies:**
@@ -138,30 +156,37 @@ This application includes a `Dockerfile` configured for deployment to Google Clo
     ```
 
 7.  **Deploy to Cloud Run:**
-    Replace placeholders. Choose a `[YOUR_SERVICE_NAME]`.
+    Replace placeholders. Choose a `[YOUR_SERVICE_NAME]`. Ensure the region matches your Artifact Registry and intended deployment location.
     ```bash
     gcloud run deploy [YOUR_SERVICE_NAME] \
         --image=us-central1-docker.pkg.dev/[YOUR_PROJECT_ID]/gemini-chat-repo/gemini-chat-image:v[YOUR_VERSION_NUMBER] \
         --platform=managed \
         --region=us-central1 \
         --allow-unauthenticated \
+        # --service-account=your-service-account@your-project-id.iam.gserviceaccount.com # Recommended: Specify service account
         # --port=8080 # Optional: Gunicorn in Dockerfile already uses 8080
 
     # Notes:
     #   --allow-unauthenticated: Allows public access. Remove for private access (requires IAM configuration).
     #   --region: Ensure this matches your Artifact Registry region.
+    #   --service-account: Strongly recommended to specify a dedicated service account with least privilege (e.g., Vertex AI User, Storage Object Admin).
     ```
-    **IMPORTANT:** This command only deploys the image. You **must** configure the necessary **Environment Variables** (like `GOOGLE_CLOUD_PROJECT`, `FLASK_SECRET_KEY`, `CHAT_PASSWORD`, `GEMINI_AI_MODEL_NAME`) separately in the Cloud Run service settings via the Google Cloud Console UI or using `gcloud run services update [YOUR_SERVICE_NAME] --update-env-vars ...` for the application to function correctly. **Do not rely on the `.env` file for production deployment.**
+    **IMPORTANT:** This command only deploys the image. You **must** configure the necessary **Environment Variables** (like `GOOGLE_CLOUD_PROJECT`, `GCLOUD_BUCKET_NAME`, `FLASK_SECRET_KEY`, and optionally `CHAT_PASSWORD`, `GEMINI_AI_MODEL_NAME`, `GOOGLE_CLOUD_LOCATION`) separately in the Cloud Run service settings via the Google Cloud Console UI or using `gcloud run services update [YOUR_SERVICE_NAME] --update-env-vars ...`. **Do not rely on the `.env` file for production deployment.** Ensure the Cloud Run service's runtime service account has the necessary permissions (Vertex AI User, Storage Object Admin on the bucket).
 
 8.  **Access Deployed App:** After deployment, `gcloud` will provide the URL for your service.
 
 ## Configuration
 
-* **Local:** Configure via the `.env` file as described in the Setup section.
-* **Cloud Run:** Configure via **Environment Variables** set in the Cloud Run service configuration (via UI or `gcloud`). This is the recommended and secure way for production.
+* **Environment Variables:** The primary method for configuration, both locally (via `.env`) and especially in production (Cloud Run environment variables/secrets).
+  * **Required:** `GOOGLE_CLOUD_PROJECT`, `GCLOUD_BUCKET_NAME`, `FLASK_SECRET_KEY`.
+  * **Optional:** `GOOGLE_CLOUD_LOCATION`, `GEMINI_AI_MODEL_NAME`, `MAX_OUTPUT_TOKENS`, `UPLOAD_FOLDER`, `CHAT_PASSWORD`, `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_SERVICE_ACCOUNT_INFO_JSON`.
+* **Local `.env` File:** Used for convenient local development. See the "Local Setup & Usage" section for an example.
+* **Cloud Run Environment Variables:** The **required and secure** way to configure deployed instances. Set these through the Cloud Console UI or `gcloud` commands.
+* **UI Settings:** The chat interface allows users to override the default Model Name, Temperature, Max Output Tokens, and Enabled Tool for their current browser session (stored in `localStorage`).
 
 ## To-Do
-* Make token counts include file/image uploads too
+* Implement streaming responses for a more interactive feel.
+* Add support for inline citations within the text (requires parsing `groundingSupports`).
 
 ## Contributing
 
