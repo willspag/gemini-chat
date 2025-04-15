@@ -479,62 +479,54 @@ document.addEventListener('DOMContentLoaded', () => {
          let searchQueryHTML = ''; // For queries at the top
          let otherGroundingHTML = ''; // For sources/suggestions at the bottom
 
-         console.log("[displayMessage] Starting role-based content processing...");
+         // console.log("[displayMessage] Starting role-based content processing...");
 
          // --- Render based on role ---
          if (role === 'user') {
-             console.log("[displayMessage] Processing USER role.");
+             // console.log("[displayMessage] Processing USER role.");
              // User messages use 'text' and 'files' arguments
              if (files.length > 0) {
                  contentHTML += '<div class="flex flex-wrap gap-2 mb-2">';
-                 files.forEach(file => {
-                      let iconClass = 'fa-file';
-                     if (file.type.startsWith('image/')) iconClass = 'fa-file-image';
-                     else if (file.type === 'application/pdf') iconClass = 'fa-file-pdf';
-                     else if (file.type.startsWith('text/')) iconClass = 'fa-file-alt';
-                     else if (file.type.includes('python') || file.name.endsWith('.py')) iconClass = 'fa-file-code';
-                     contentHTML += `<div class="bg-gray-200 dark:bg-gray-600 p-1 px-2 rounded text-xs flex items-center gap-1"> <i class="fas ${iconClass} text-gray-600 dark:text-gray-400"></i> <span>${file.name}</span> </div>`;
-                 });
-                 contentHTML += '</div>';
              }
              if (text) {
-                 console.log("[displayMessage] User role: Adding text content.");
+                 // console.log("[displayMessage] User role: Adding text content.");
                  const escapedText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
                  contentHTML += `<p class="whitespace-pre-wrap">${escapedText}</p>`;
              } else if (files.length > 0 && !text) {
-                 console.log("[displayMessage] User role: Adding file count message.");
+                 // console.log("[displayMessage] User role: Adding file count message.");
                  contentHTML += `<p class="italic text-sm text-gray-500 dark:text-gray-400">[Uploaded ${files.length} file(s)]</p>`;
              }
-         } else { // Model or Error roles - process the 'parts' array
-             console.log(`[displayMessage] Processing ${role.toUpperCase()} role.`);
+         } else { // Model or Error roles
+             // console.log(`[displayMessage] Processing ${role.toUpperCase()} role.`);
 
              // --- Render Search Queries FIRST (if available) ---
              if (grounding && grounding.web_search_queries && grounding.web_search_queries.length > 0) {
-                 console.log("[displayMessage] Adding web search queries at the top.");
-                 searchQueryHTML += `<div class="search-query-info mb-3 pb-2 border-b border-border-light/50 dark:border-border-dark/50 text-sm">`; // Border below queries
-                 searchQueryHTML += `<strong class="text-gray-700 dark:text-gray-300 font-semibold"><i class="fas fa-search text-xs mr-1 opacity-70"></i> Searched for:</strong>`;
+                 // console.log("[displayMessage] Adding web search queries at the top.");
+                 searchQueryHTML += `<div class="search-query-info mb-3 pb-2 border-b border-gray-200 dark:border-gray-700 text-sm">`; // Subtle border
+                 searchQueryHTML += `<strong class="text-gray-600 dark:text-gray-400 font-medium"><i class="fas fa-search text-xs mr-1 opacity-80"></i> Searched for:</strong>`; // Slightly muted strong text
                  grounding.web_search_queries.forEach(query => {
-                     searchQueryHTML += `<span class="ml-1 italic bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 rounded text-xs text-gray-800 dark:text-gray-200">${query.replace(/</g, "&lt;")}</span>`;
+                     // Changed query styling slightly - removed italic, slightly different bg/text
+                     searchQueryHTML += `<span class="ml-1.5 bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 rounded text-xs text-gray-700 dark:text-gray-300">${query.replace(/</g, "&lt;")}</span>`;
                  });
                  searchQueryHTML += `</div>`;
              }
 
              // --- Process Main Content Parts ---
              if (parts && parts.length > 0) {
-                 console.log(`[displayMessage] ${role.toUpperCase()} role: Processing ${parts.length} part(s).`);
+                 // console.log(`[displayMessage] ${role.toUpperCase()} role: Processing ${parts.length} part(s).`);
                  parts.forEach((part, index) => {
-                     console.log(`[displayMessage] ${role.toUpperCase()} role: Processing part ${index + 1}/${parts.length}`, part);
+                     // console.log(`[displayMessage] ${role.toUpperCase()} role: Processing part ${index + 1}/${parts.length}`, part);
                      switch (part.type) {
                          case 'text':
                              if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-                                 console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part. Input:`, part.content);
+                                 // console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part. Input:`, part.content);
                                  const unsafeHTML = marked.parse(part.content || ""); // Use configured marked
-                                 console.log("Marked output (unsafeHTML):", unsafeHTML);
+                                 // console.log("Marked output (unsafeHTML):", unsafeHTML);
                                  const safeHTML = DOMPurify.sanitize(unsafeHTML);
-                                 console.log("DOMPurify output (safeHTML):", safeHTML);
+                                 // console.log("DOMPurify output (safeHTML):", safeHTML);
                                  contentHTML += `<div class="prose dark:prose-invert max-w-none">${safeHTML}</div>`;
                              } else {
-                                 console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part with fallback. Input:`, part.content);
+                                 // console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part with fallback. Input:`, part.content);
                                  contentHTML += `<p class="whitespace-pre-wrap">${(part.content || "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`; // Fallback
                              }
                              break;
@@ -552,8 +544,12 @@ document.addEventListener('DOMContentLoaded', () => {
                              break;
                          default:
                              console.warn("Unknown part type received:", part.type);
-                             const escapedContent = JSON.stringify(part.content || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                             contentHTML += `<p class="text-xs text-red-500">[Unsupported content type: ${part.type}]</p><pre class="text-xs">${escapedContent}</pre>`;
+                             // Slightly improved display for unknown parts
+                             const partDetails = JSON.stringify(part, null, 2).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                             contentHTML += `<div class="my-2 p-2 border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 rounded text-xs text-red-700 dark:text-red-300">
+                                              <p class="font-semibold mb-1">[Unsupported content type: ${part.type}]</p>
+                                              <pre class="whitespace-pre-wrap break-all">${partDetails}</pre>
+                                            </div>`;
                      }
                  });
              } else if (!searchQueryHTML) { // Add placeholder if no parts AND no search query shown
@@ -562,7 +558,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
              // --- Render Other Grounding Info (Sources, Suggestions) at the bottom ---
              if (grounding) {
-                 console.log(`[displayMessage] ${role.toUpperCase()} role: Handling bottom grounding info.`);
+                 // console.log(`[displayMessage] ${role.toUpperCase()} role: Handling bottom grounding info.`);
                  let addedSeparator = false;
 
                  // Container for bottom grounding info (only add if needed)
@@ -570,10 +566,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
                  // Display Grounding Chunks (Sources)
                  if (grounding.grounding_chunks && grounding.grounding_chunks.length > 0) {
-                     console.log("[displayMessage] Adding grounding chunks (sources).");
+                     // console.log("[displayMessage] Adding grounding chunks (sources).");
                      let sourcesHTML = `<div class="mb-2">`;
-                     sourcesHTML += `<strong class="text-gray-700 dark:text-gray-300 font-semibold"><i class="fas fa-link text-xs mr-1 opacity-70"></i> Sources:</strong>`;
-                     sourcesHTML += `<ul class="list-none pl-2 mt-1 text-xs space-y-1">`;
+                     sourcesHTML += `<strong class="text-gray-600 dark:text-gray-400 font-medium text-sm"><i class="fas fa-link text-xs mr-1 opacity-80"></i> Sources:</strong>`; // Use text-sm
+                     sourcesHTML += `<ul class="list-none pl-4 mt-1 text-xs space-y-1">`; // Slightly more indent
                      grounding.grounding_chunks.forEach((chunk, index) => {
                          const title = chunk.title ? chunk.title.replace(/</g, "&lt;") : 'Source';
                          const domain = chunk.domain ? `<span class="text-gray-500 dark:text-gray-400 ml-1">(${chunk.domain.replace(/</g, "&lt;")})</span>` : '';
@@ -586,11 +582,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
                  // Display Search Suggestions (Rendered Content)
                  if (grounding.search_suggestions_html) {
-                     console.log("[displayMessage] Adding search suggestions HTML.");
+                     // console.log("[displayMessage] Adding search suggestions HTML.");
                      let suggestionsHTML = `<div class="search-suggestions">`;
-                     if(addedSeparator) suggestionsHTML = `<div class="mt-2 pt-2 border-t border-border-light/50 dark:border-border-dark/50">` + suggestionsHTML; // Add separator if sources shown
+                     if(addedSeparator) suggestionsHTML = `<div class="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">` + suggestionsHTML; // Use subtle border
 
-                     suggestionsHTML += `<strong class="text-gray-700 dark:text-gray-300 font-semibold text-xs block mb-1"><i class="fas fa-lightbulb text-xs mr-1 opacity-70"></i> Related:</strong>`;
+                     suggestionsHTML += `<strong class="text-gray-600 dark:text-gray-400 font-medium text-sm block mb-1"><i class="fas fa-lightbulb text-xs mr-1 opacity-80"></i> Related:</strong>`; // Use text-sm
                      // IMPORTANT: Insert HTML directly - Assume safe from Google
                      suggestionsHTML += grounding.search_suggestions_html;
                      suggestionsHTML += `</div>`;
@@ -600,32 +596,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
                  // Add the container only if it has content
                  if(bottomGroundingContainer) {
-                     otherGroundingHTML = `<div class="grounding-info mt-3 pt-3 border-t border-border-light dark:border-border-dark text-sm">${bottomGroundingContainer}</div>`;
+                     // Added subtle background and padding to the grounding area
+                     otherGroundingHTML = `<div class="grounding-info mt-4 pt-3 px-3 pb-1 rounded-b-lg bg-gray-50 dark:bg-gray-800/30 border-t border-gray-200 dark:border-gray-700 text-sm">${bottomGroundingContainer}</div>`;
                  }
              }
 
              // Finish Reason (Append after primary content, before grounding info)
              if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS' && finishReason !== 'FINISH_REASON_UNSPECIFIED') {
-                 console.log("[displayMessage] Adding Finish Reason.");
-                 contentHTML += `<p class="text-xs text-gray-500 dark:text-gray-400 mt-2 pt-1">Finish Reason: ${finishReason}</p>`;
+                 // console.log("[displayMessage] Adding Finish Reason.");
+                 // Append finish reason to contentHTML *before* other grounding info is added. Added border-top.
+                 contentHTML += `<p class="text-xs text-gray-500 dark:text-gray-400 mt-2 pt-1 border-t border-gray-200 dark:border-gray-700">Finish Reason: ${finishReason}</p>`;
              }
          }
 
          // Error Styling
          if (role === 'error') {
-              console.log("[displayMessage] Applying error styling.");
-               bubbleDiv.classList.add('bg-red-100', 'dark:bg-red-900', 'text-red-700', 'dark:text-red-300');
+             // console.log("[displayMessage] Applying error styling.");
+              bubbleDiv.classList.add('bg-red-100', 'dark:bg-red-900', 'text-red-700', 'dark:text-red-300');
          }
 
          // Set bubble content (main content + grounding info)
-         console.log("[displayMessage] Setting bubble innerHTML. searchQueryHTML:", searchQueryHTML);
-         console.log("[displayMessage] Setting bubble innerHTML. contentHTML:", contentHTML);
-         console.log("[displayMessage] Setting bubble innerHTML. otherGroundingHTML:", otherGroundingHTML);
+         // console.log("[displayMessage] Setting bubble innerHTML. searchQueryHTML:", searchQueryHTML);
+         // console.log("[displayMessage] Setting bubble innerHTML. contentHTML:", contentHTML);
+         // console.log("[displayMessage] Setting bubble innerHTML. otherGroundingHTML:", otherGroundingHTML);
          bubbleDiv.innerHTML = searchQueryHTML + contentHTML + otherGroundingHTML;
          messageDiv.appendChild(bubbleDiv);
          chatContainer.appendChild(messageDiv);
 
-         console.log("[displayMessage] Applying highlighting and copy buttons if needed.");
+         // console.log("[displayMessage] Applying highlighting and copy buttons if needed.");
 
          // Apply Syntax Highlighting and Add Copy Buttons AFTER rendering
          if (role === 'model') { // Only apply to model responses now
@@ -633,23 +631,23 @@ document.addEventListener('DOMContentLoaded', () => {
                  if (typeof hljs !== 'undefined') {
                      highlightCodeInElement(bubbleDiv);
                  }
-                 addCopyButtonsToCodeBlocks(bubbleDiv);
+                 // addCopyButtonsToCodeBlocks(bubbleDiv);
              } catch(e) {
                  console.error("Error applying highlighting or copy buttons:", e);
              }
          }
 
-         console.log("[displayMessage] Scrolling to bottom.");
+         // console.log("[displayMessage] Scrolling to bottom.");
          scrollToBottom();
     }
 
     // --- Apply Syntax Highlighting ---
     function highlightCodeInElement(containerElement) {
-        console.log("[highlightCodeInElement] Highlighting code in element:", containerElement);
+        // console.log("[highlightCodeInElement] Highlighting code in element:", containerElement);
         if (typeof hljs === 'undefined') { return; } // Guard clause
         // Find code blocks that haven't been highlighted yet
         const codeBlocks = containerElement.querySelectorAll('pre code:not(.hljs)');
-        console.log(`[highlightCodeInElement] Found ${codeBlocks.length} code blocks to highlight.`);
+        // console.log(`[highlightCodeInElement] Found ${codeBlocks.length} code blocks to highlight.`);
         codeBlocks.forEach((codeElement) => {
             try {
                  hljs.highlightElement(codeElement);
@@ -663,14 +661,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Add Copy Buttons ---
     function addCopyButtonsToCodeBlocks(containerElement) {
         // Add check for clipboard API support
-        console.log("[addCopyButtonsToCodeBlocks] Adding copy buttons in element:", containerElement);
+        // console.log("[addCopyButtonsToCodeBlocks] Adding copy buttons in element:", containerElement);
         if (typeof navigator.clipboard === 'undefined' || typeof navigator.clipboard.writeText === 'undefined') {
              console.warn("Clipboard API (writeText) not available, copy buttons will not function correctly.");
              // return; // Decide whether to add non-functional buttons or not
         }
         // Find PRE elements that likely contain code (have a CODE child with a language class)
         const codeBlocks = containerElement.querySelectorAll('pre code[class*="language-"]');
-        console.log(`[addCopyButtonsToCodeBlocks] Found ${codeBlocks.length} code blocks to add buttons to.`);
+        // console.log(`[addCopyButtonsToCodeBlocks] Found ${codeBlocks.length} code blocks to add buttons to.`);
         codeBlocks.forEach(codeElement => {
             const preElement = codeElement.parentNode; // Get the parent <pre>
             if (!preElement || preElement.tagName !== 'PRE') return; // Ensure parent is <pre>
@@ -751,7 +749,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
      // --- Utility Functions ---
     function setLoading(isLoading) {
-         console.log(`[setLoading] Setting loading state to: ${isLoading}`);
+         // console.log(`[setLoading] Setting loading state to: ${isLoading}`);
          if (!sendButton || !sendIcon || !loadingIndicator) return;
          if (isLoading) {
              sendIcon.classList.add('hidden');

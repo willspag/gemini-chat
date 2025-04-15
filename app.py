@@ -65,6 +65,19 @@ TEMP_IMAGE_DIR = os.path.join('static', 'temp') # Relative path within project
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
+# Suppress TensorFlow INFO and WARNING messages
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# Configure Flask logging
+if app.debug:
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+else:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+# Silence werkzeug logger for normal requests if not in debug mode
+if not app.debug:
+    werkzeug_logger = logging.getLogger('werkzeug')
+    werkzeug_logger.setLevel(logging.ERROR)
+
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 app.config['SECRET_KEY'] = os.getenv("FLASK_SECRET_KEY", "default-secret-key-change-me")
@@ -73,13 +86,13 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 app_root_path = app.root_path
 temp_image_dir_abs = os.path.join(app_root_path, TEMP_IMAGE_DIR)
 os.makedirs(temp_image_dir_abs, exist_ok=True)
-print(f"Ensured static temp image directory exists: {temp_image_dir_abs}")
+# print(f"Ensured static temp image directory exists: {temp_image_dir_abs}") # Less verbose
 
 
 # --- Global Stores & Logging ---
 CHAT_SESSIONS = {}
 SESSION_TIMESTAMPS = {}
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s') # Configured above
 
 # --- Google Client Initialization & Tools ---
 genai_client = None
@@ -100,15 +113,16 @@ try:
     if SERVICE_ACCOUNT_INFO_JSON:
         credentials_info = json.loads(SERVICE_ACCOUNT_INFO_JSON)
         storage_client = storage.Client.from_service_account_info(credentials_info)
-        print("GCS Client initialized using service account JSON.")
+        # print("GCS Client initialized using service account JSON.") # Less verbose
     elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
          storage_client = storage.Client()
-         print("GCS Client initialized using GOOGLE_APPLICATION_CREDENTIALS.")
+         # print("GCS Client initialized using GOOGLE_APPLICATION_CREDENTIALS.") # Less verbose
     else:
         storage_client = storage.Client()
-        print("GCS Client initialized using ADC or default service account.")
+        # print("GCS Client initialized using ADC or default service account.") # Less verbose
+    logging.info("Google Cloud Storage Client initialized.")
 
-    print("Available tools: Google Search, Code Execution")
+    logging.info("Available tools: Google Search, Code Execution")
 
 except Exception as e:
     initialization_error = f"Error during initialization: {e}\n{traceback.format_exc()}"
@@ -150,7 +164,7 @@ def get_chat_session(session_id, model_name, temperature, max_tokens, enabled_to
     if session_id in CHAT_SESSIONS:
         # TODO: Ideally, check if model_name or enabled_tool_name differs from stored session
         # and potentially recreate the chat if they do. For now, just reuse.
-        logging.info(f"Reusing existing chat session for ID: {session_id}")
+        # logging.info(f"Reusing existing chat session for ID: {session_id}") # Less verbose
         chat = CHAT_SESSIONS[session_id]
         SESSION_TIMESTAMPS[session_id] = current_time # Update last access time
         return chat
@@ -164,6 +178,7 @@ def get_chat_session(session_id, model_name, temperature, max_tokens, enabled_to
         active_tools.append(google_search_tool)
         logging.info("Enabling Google Search tool for new session.")
     elif enabled_tool_name == 'code':
+        # Ensure code execution tool is only added if available/enabled
         active_tools.append(code_execution_tool)
         logging.info("Enabling Code Execution tool for new session.")
     else:
@@ -199,7 +214,7 @@ def cleanup_old_sessions():
         SESSION_TIMESTAMPS.pop(sid, None)
         count += 1
     if count > 0:
-        logging.info(f"Cleaned up {count} inactive chat session(s).")
+        logging.debug(f"Cleaned up {count} inactive chat session(s).") # Use debug level
 
 # --- Routes ---
 @app.route('/')
@@ -236,7 +251,6 @@ def clear_chat():
         logging.info(f"Cleared chat session state for ID: {session_id}")
     return jsonify({"success": True, "message": "Chat cleared."})
 
-
 @app.route('/chat', methods=['POST'])
 def chat_endpoint():
     """Handles chat requests using persistent sessions."""
@@ -262,7 +276,7 @@ def chat_endpoint():
         temperature_to_use = max(0.0, min(float(request.form.get('temperature', 0.7)), 2.0))
         max_tokens_to_use = max(MIN_TOKENS_LIMIT, min(int(request.form.get('max_output_tokens', DEFAULT_MAX_TOKENS)), MAX_TOKENS_LIMIT))
 
-        logging.info(f"Chat request - Model: {model_to_use}, Temp: {temperature_to_use}, Max Tokens: {max_tokens_to_use}, Tool: {enabled_tool_name}")
+        logging.debug(f"Chat request - Model: {model_to_use}, Temp: {temperature_to_use}, Max Tokens: {max_tokens_to_use}, Tool: {enabled_tool_name}") # Use debug level
         if not text_prompt and not uploaded_files: return jsonify({"error": "Prompt or file required."}), 400
 
         # Session and Chat Object
@@ -279,6 +293,8 @@ def chat_endpoint():
                 local_filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 local_temp_files.append(local_filepath)
                 try:
+                    # Ensure the directory exists before saving
+                    os.makedirs(os.path.dirname(local_filepath), exist_ok=True)
                     file.save(local_filepath)
                     mime_type = mimetypes.guess_type(local_filepath)[0] or 'application/octet-stream'
                     gcs_blob_name = f"uploads/{session_id}/{filename}"
@@ -295,7 +311,9 @@ def chat_endpoint():
                     logging.error(f"Error saving file locally {file.filename}: {save_err}")
                     upload_error_occurred = True
             elif file:
-                logging.warning(f"File type not allowed: {file.filename}")
+                # Only log as warning if file exists but type not allowed
+                if file.filename:
+                    logging.warning(f"File type not allowed: {file.filename}")
                 upload_error_occurred = True
 
         if text_prompt: current_turn_parts.append(text_prompt)
@@ -307,10 +325,15 @@ def chat_endpoint():
                      except OSError as e: logging.error(f"Error deleting orphaned local temp file {path}: {e}")
              return jsonify({"error": "No valid content to send after processing uploads."}), 400
 
+        # Ensure chat_session is valid before sending message
+        if not chat_session:
+            logging.error(f"Chat session is None for session ID: {session_id}. Cannot send message.")
+            return jsonify({"error": "Chat session initialization failed previously. Please start a new chat."}), 500
+
         # Send to Model (Config is part of chat_session now)
-        logging.info(f"Sending message to chat session {session_id} with {len(current_turn_parts)} parts.")
+        logging.debug(f"Sending message to chat session {session_id} with {len(current_turn_parts)} parts.") # Use debug level
         response = chat_session.send_message(current_turn_parts) # No config needed here
-        logging.info(f"Received response from chat session {session_id}")
+        logging.debug(f"Received response from chat session {session_id}") # Use debug level
 
         # --- Process Response ---
         processed_response_parts = []
@@ -324,41 +347,40 @@ def chat_endpoint():
                 candidate = response.candidates[0]
                 if hasattr(candidate, 'finish_reason'): finish_reason_str = str(candidate.finish_reason.name) if hasattr(candidate.finish_reason, 'name') else str(candidate.finish_reason)
 
-                # --- Process Parts ---
-                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                # --- Process Parts (Check content exists first) ---
+                if hasattr(candidate, 'content'):
                     # Check if content and parts exist before logging length
                     if candidate.content and candidate.content.parts:
-                        logging.info(f"--- Raw Response Parts ({len(candidate.content.parts)}) ---")
+                        logging.debug(f"--- Raw Response Parts ({len(candidate.content.parts)}) ---") # Debug level
                         for i, part in enumerate(candidate.content.parts):
-                            logging.info(f"Part {i}: Type={type(part)}")
+                            logging.debug(f"Part {i}: Type={type(part)}") # Debug level
                             part_attrs = {attr: repr(getattr(part, attr, 'N/A')) for attr in ['text', 'inline_data', 'executable_code', 'code_execution_result', 'function_call'] if hasattr(part, attr)}
-                            logging.info(f"Part {i} Attributes: {part_attrs}")
-                            if hasattr(part, 'inline_data') and part.inline_data: logging.info(f"Part {i} Inline Data: MimeType={getattr(part.inline_data, 'mime_type', 'N/A')}, Data Length={len(getattr(part.inline_data, 'data', b''))} bytes")
+                            logging.debug(f"Part {i} Attributes: {part_attrs}") # Debug level
+                            if hasattr(part, 'inline_data') and part.inline_data: logging.debug(f"Part {i} Inline Data: MimeType={getattr(part.inline_data, 'mime_type', 'N/A')}, Data Length={len(getattr(part.inline_data, 'data', b''))} bytes") # Debug level
                     else:
-                        logging.info("--- Candidate content or parts are missing/empty. --- ")
+                        logging.debug("--- Candidate content or parts are missing/empty. --- ") # Debug level
 
-                    logging.info("--- Processing Parts ---")
-                    logging.info(f"Verifying parts exist: {bool(candidate.content.parts if candidate.content else False)}. Number of parts: {len(candidate.content.parts) if candidate.content and candidate.content.parts else 0}")
+                    logging.debug("--- Processing Parts --- (if they exist)") # Debug level
                     # Only loop if parts exist
                     if candidate.content and candidate.content.parts:
                         for part in candidate.content.parts:
                             part_processed = False
-                            logging.info(f"  Processing part object: {part!r}") # Log the part object itself
+                            logging.debug(f"  Processing part object: {part!r}") # Debug level
                             # Check Text
                             if hasattr(part, 'text'):
-                                logging.info(f"    Part has text attribute.")
+                                logging.debug(f"    Part has text attribute.") # Debug level
                                 if part.text:
-                                    logging.info(f"    Part text is not empty: '{part.text[:50]}...'")
+                                    logging.debug(f"    Part text is not empty: '{part.text[:50]}...'") # Debug level
                                     processed_response_parts.append({"type": "text", "content": part.text})
-                                    logging.info(f"    Appended text part. processed_response_parts length NOW: {len(processed_response_parts)}")
+                                    logging.debug(f"    Appended text part. processed_response_parts length NOW: {len(processed_response_parts)}") # Debug level
                                     response_text_aggregate += part.text + "\n"; part_processed = True
                                 else:
-                                    logging.info("    Part text attribute is empty.")
+                                    logging.debug("    Part text attribute is empty.") # Debug level
                             else:
-                                 logging.info("    Part does NOT have text attribute.")
+                                logging.debug("    Part does NOT have text attribute.") # Debug level
                             # Check Executable Code
                             if hasattr(part, 'executable_code') and part.executable_code is not None:
-                                logging.info("    Part has executable_code.")
+                                logging.debug("    Part has executable_code.") # Debug level
                                 code_part = part.executable_code
                                 if hasattr(code_part, 'code'):
                                     processed_response_parts.append({"type": "executable_code", "language": getattr(code_part, 'language', 'python').lower(), "code": code_part.code})
@@ -366,15 +388,16 @@ def chat_endpoint():
                                 else: logging.warning(f"Part has 'executable_code' but lacks 'code': {part}")
                             # Check Code Result
                             if hasattr(part, 'code_execution_result') and part.code_execution_result is not None:
-                                logging.info("    Part has code_execution_result.")
+                                # logging.debug("    Part has code_execution_result.") # Debug level - this line might be causing issues, keep commented/removed
                                 result_part = part.code_execution_result
                                 if hasattr(result_part, 'output'):
                                     processed_response_parts.append({"type": "code_result", "outcome": str(getattr(result_part, 'outcome', 'UNKNOWN')).upper(), "output": result_part.output})
                                     part_processed = True
-                                else: logging.warning(f"Part has 'code_execution_result' but lacks 'output': {part}")
+                                else:
+                                    logging.warning(f"Part has 'code_execution_result' but lacks 'output': {part}")
                             # Check Inline Data (Images)
                             if hasattr(part, 'inline_data') and part.inline_data is not None:
-                                logging.info("    Part has inline_data.")
+                                logging.debug("    Part has inline_data.") # Debug level
                                 inline_data = part.inline_data
                                 try:
                                     img_data = inline_data.data
@@ -383,13 +406,13 @@ def chat_endpoint():
                                     img_extension = mimetypes.guess_extension(mime_type) or '.png'
                                     img_filename = f"{session_id}_{uuid.uuid4()}{img_extension}"
                                     img_path_abs = os.path.join(app_root_path, TEMP_IMAGE_DIR, img_filename)
-                                    logging.info(f"Attempting to save image data ({len(img_data)} bytes, mime: {mime_type}) to: {img_path_abs}")
+                                    logging.debug(f"Attempting to save image data ({len(img_data)} bytes, mime: {mime_type}) to: {img_path_abs}") # Debug level
                                     with open(img_path_abs, 'wb') as f: f.write(img_data)
                                     if os.path.exists(img_path_abs):
-                                        logging.info(f"Image file successfully saved.")
+                                        logging.debug(f"Image file successfully saved.") # Debug level
                                         image_url = url_for('static', filename=f'temp/{img_filename}', _external=False)
                                         processed_response_parts.append({"type": "image", "url": image_url, "mime_type": mime_type})
-                                        logging.info(f"Generated image URL: {image_url}")
+                                        logging.debug(f"Generated image URL: {image_url}") # Debug level
                                     else:
                                         logging.error(f"Image file NOT found after saving attempt at {img_path_abs}")
                                         processed_response_parts.append({"type": "text", "content": "[Error saving generated image]"})
@@ -406,13 +429,14 @@ def chat_endpoint():
                             if not part_processed:
                                 logging.warning(f"  Unprocessed response part type encountered: {type(part)}, Part content: {part!r}")
                     else:
-                        logging.info("Skipping parts processing loop as candidate.content or candidate.content.parts is missing/empty.")
+                        logging.debug("Skipping parts processing loop as candidate.content or candidate.content.parts is missing/empty.") # Debug level
+                else:
+                    logging.warning("Candidate content attribute is missing.")
 
                 # --- Process Grounding Metadata (if available) ---
                 if (hasattr(candidate, 'grounding_metadata') and
                          candidate.grounding_metadata):
-                     logging.info("Processing grounding metadata...")
-                     logging.info(f"Raw grounding_metadata object: {candidate.grounding_metadata!r}") # Log the raw object
+                     logging.debug("Processing grounding metadata...") # Debug level
                      metadata = candidate.grounding_metadata
                      extracted_grounding = {}
  
@@ -421,31 +445,31 @@ def chat_endpoint():
                          extracted_grounding['web_search_queries'] = list(metadata.web_search_queries)
                          logging.info(f"Extracted web search queries: {extracted_grounding['web_search_queries']}")
                      else:
-                         logging.info("webSearchQueries attribute not found or empty in metadata.")
+                         logging.debug("web_search_queries attribute not found or empty in metadata.") # Debug level
  
                      # Log Grounding Supports if available
-                     if hasattr(metadata, 'groundingSupports') and metadata.groundingSupports:
-                         logging.info("\n--- START GROUNDING SUPPORTS ---")
+                     if hasattr(metadata, 'grounding_supports') and metadata.grounding_supports:
+                         logging.debug("\n--- START GROUNDING SUPPORTS ---") # Debug level
                          try:
                              # Attempt to log the representation
-                             logging.info(f"Raw groundingSupports: {metadata.groundingSupports!r}")
+                             pass # Add pass to satisfy the try block
                          except Exception as log_err:
                              logging.error(f"Could not log groundingSupports representation: {log_err}")
                              # Fallback to logging the type if repr fails
-                             logging.info(f"groundingSupports Type: {type(metadata.groundingSupports)}")
-                         logging.info("--- END GROUNDING SUPPORTS ---\n")
+                             logging.debug(f"groundingSupports Type: {type(metadata.grounding_supports)}") # Debug level
+                         logging.debug("--- END GROUNDING SUPPORTS ---\n") # Debug level
                      else:
-                         logging.info("groundingSupports attribute not found or empty in metadata.")
+                         logging.debug("groundingSupports attribute not found or empty in metadata.") # Debug level
  
                      # Extract Grounding Chunks (Web Sources)
-                     if hasattr(metadata, 'groundingChunks') and metadata.groundingChunks:
+                     if hasattr(metadata, 'grounding_chunks') and metadata.grounding_chunks:
                          web_chunks = []
-                         for chunk in metadata.groundingChunks:
+                         for chunk in metadata.grounding_chunks:
                              if hasattr(chunk, 'web') and chunk.web and hasattr(chunk.web, 'uri'):
                                  web_chunk_data = {
                                      'title': getattr(chunk.web, 'title', None),
                                      'uri': chunk.web.uri,
-                                     'domain': getattr(chunk.web, 'domain', None) # Add domain if available
+                                     'domain': getattr(chunk.web, 'domain', None)
                                  }
                                  if web_chunk_data['uri']: # Only add if URI exists
                                      web_chunks.append(web_chunk_data)
@@ -453,8 +477,37 @@ def chat_endpoint():
                              extracted_grounding['grounding_chunks'] = web_chunks
                              logging.info(f"Extracted {len(web_chunks)} web grounding chunks.")
                      else:
-                         logging.info("groundingChunks attribute not found or empty in metadata.")
+                         logging.debug("grounding_chunks attribute not found or empty in metadata.") # Debug level
  
+                     # Extract Grounding Supports (for potential inline citations)
+                     # We already logged this, now extract it for the frontend
+                     if hasattr(metadata, 'grounding_supports') and metadata.grounding_supports:
+                         # Basic extraction for now, frontend will need to parse segments/indices
+                         # Convert complex objects to dicts if needed, or handle on frontend
+                         # For simplicity, let's convert the core parts to a list of dicts
+                         supports_list = []
+                         try:
+                             for support in metadata.grounding_supports:
+                                 segment_info = None
+                                 if hasattr(support, 'segment') and support.segment:
+                                     segment_info = {
+                                         'start_index': getattr(support.segment, 'start_index', None),
+                                         'end_index': getattr(support.segment, 'end_index', None),
+                                         'text': getattr(support.segment, 'text', None)
+                                     }
+                                 support_data = {
+                                     'chunk_indices': list(getattr(support, 'grounding_chunk_indices', [])),
+                                     'confidence_scores': list(getattr(support, 'confidence_scores', [])),
+                                     'segment': segment_info
+                                 }
+                                 supports_list.append(support_data)
+                             if supports_list:
+                                 extracted_grounding['grounding_supports'] = supports_list
+                                 logging.info(f"Extracted {len(supports_list)} grounding supports.")
+                         except Exception as extract_err:
+                             logging.error(f"Error extracting grounding_supports details: {extract_err}")
+                     # else: (already logged that it's missing)
+
                      # Extract Search Suggestions (Rendered Content)
                      if (hasattr(metadata, 'search_entry_point') and
                          metadata.search_entry_point and
@@ -463,7 +516,7 @@ def chat_endpoint():
                          extracted_grounding['search_suggestions_html'] = metadata.search_entry_point.rendered_content
                          logging.info("Extracted search suggestions (rendered_content).")
                      else:
-                         logging.info("search_entry_point or rendered_content not found in metadata.")
+                         logging.debug("search_entry_point or rendered_content not found in metadata.") # Debug level
 
                      if extracted_grounding: # Only assign if we extracted something
                          grounding_data = extracted_grounding
@@ -506,7 +559,7 @@ def chat_endpoint():
         }
         if grounding_data:
             response_payload["grounding"] = grounding_data
-        logging.info(f"Response payload being sent to frontend: {response_payload}")
+        logging.debug(f"Response payload being sent to frontend: {response_payload}") # Debug level
         return jsonify(response_payload)
 
     except Exception as e:
