@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const footerModelDisplay = document.getElementById('footer-model-name');
     const footerTempDisplay = document.getElementById('footer-temp-display');
     const newChatButton = document.getElementById('new-chat-button'); // New Chat Button
+    const tokenCountDisplay = document.getElementById('token-count-display'); // Added for token count
     const passwordModalOverlay = document.getElementById('password-modal-overlay');
     const passwordForm = document.getElementById('password-form');
     const passwordInput = document.getElementById('password-input');
@@ -35,7 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
         themeToggleButton, settingsButton, settingsModalOverlay, settingsModalContent, settingsModelInput,
         settingsTempSlider, settingsTempValueDisplay, settingsMaxTokensInput, settingsSaveButton, settingsCloseButton,
         settingsToolDropdown, // Added Tool Dropdown
-        headerModelDisplay, footerModelDisplay, footerTempDisplay, newChatButton, passwordModalOverlay,
+        headerModelDisplay, footerModelDisplay, footerTempDisplay, newChatButton, tokenCountDisplay, passwordModalOverlay,
         passwordForm, passwordInput, passwordSubmitButton, passwordError
     };
 
@@ -117,6 +118,7 @@ document.addEventListener('DOMContentLoaded', () => {
                promptInput.style.overflowY = 'hidden';
            }
            updateSendButtonState();
+           debouncedTokenCount(); // Trigger token count on input
        });
    } else { console.error("Prompt input element not found"); }
 
@@ -781,5 +783,68 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     } else { console.error("Prompt input not found for keydown listener"); }
+
+    // --- Debounce Function Utility ---
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    };
+
+    // --- Function to Call the Token Counting Endpoint ---
+    async function updateTokenCount() {
+        if (!promptInput || !tokenCountDisplay || (!isAuthenticated && window.passwordRequired)) {
+            return; // Don't count if input missing, display missing, or not authenticated
+        }
+
+        const pendingText = promptInput.value;
+
+        // Display a loading state immediately
+        tokenCountDisplay.textContent = 'Tokens: calculating...';
+        tokenCountDisplay.classList.remove('text-red-500');
+
+        try {
+            const response = await fetch('/count_tokens', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pending_text: pendingText })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+                throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            if (data.total_tokens !== undefined) {
+                tokenCountDisplay.textContent = `Tokens: ${data.total_tokens}`;
+            } else if (data.error) {
+                console.error("Token count error (from backend):", data.error);
+                tokenCountDisplay.textContent = 'Tokens: error';
+                tokenCountDisplay.classList.add('text-red-500');
+            } else {
+                 tokenCountDisplay.textContent = 'Tokens: unknown'; // Fallback
+            }
+
+        } catch (error) {
+            console.error("Error fetching token count:", error);
+            tokenCountDisplay.textContent = 'Tokens: error';
+            tokenCountDisplay.classList.add('text-red-500'); // Indicate error visually
+        }
+    }
+
+    // --- Create a Debounced Version of the Token Count Function ---
+    const debouncedTokenCount = debounce(updateTokenCount, 500); // 500ms delay
+
+    // --- Initial Token Count on Load (if Authenticated) ---
+    if (isAuthenticated) {
+        updateTokenCount();
+    }
 
 }); // End DOMContentLoaded

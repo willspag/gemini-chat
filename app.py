@@ -18,6 +18,7 @@ from google.api_core import exceptions as gcp_exceptions
 from datetime import datetime, timedelta, timezone
 import traceback
 import logging
+import shutil # Added shutil
 # Check if APScheduler is installed before trying to import and use it
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -63,6 +64,29 @@ if not GCLOUD_BUCKET_NAME: raise ValueError("GCLOUD_BUCKET_NAME environment vari
 SERVICE_ACCOUNT_INFO_JSON = os.getenv("GOOGLE_CLOUD_SERVICE_ACCOUNT_INFO_JSON")
 TEMP_IMAGE_DIR = os.path.join('static', 'temp') # Relative path within project
 
+
+def clear_directory(dir_path):
+    """Removes all files and subdirectories within a given directory."""
+    if not os.path.exists(dir_path):
+        logging.warning(f"Directory not found, cannot clear: {dir_path}")
+        return
+    if not os.path.isdir(dir_path):
+        logging.error(f"Path is not a directory, cannot clear: {dir_path}")
+        return
+
+    logging.info(f"Clearing contents of directory: {dir_path}")
+    for filename in os.listdir(dir_path):
+        file_path = os.path.join(dir_path, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            logging.error(f'Failed to delete {file_path}. Reason: {e}')
+    logging.info(f"Finished clearing directory: {dir_path}")
+
+
 # --- Flask App Initialization ---
 app = Flask(__name__)
 # Suppress TensorFlow INFO and WARNING messages
@@ -88,10 +112,14 @@ temp_image_dir_abs = os.path.join(app_root_path, TEMP_IMAGE_DIR)
 os.makedirs(temp_image_dir_abs, exist_ok=True)
 # print(f"Ensured static temp image directory exists: {temp_image_dir_abs}") # Less verbose
 
+# --- Clear Temp Dirs on Startup ---
+clear_directory(app.config['UPLOAD_FOLDER'])
+clear_directory(temp_image_dir_abs)
 
 # --- Global Stores & Logging ---
 CHAT_SESSIONS = {}
 SESSION_TIMESTAMPS = {}
+CHAT_HISTORIES = {} # Added to store history manually
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s') # Configured above
 
 # --- Google Client Initialization & Tools ---
@@ -151,6 +179,27 @@ def upload_to_gcs(source_file_path, destination_blob_name):
         logging.error(f"Failed to upload {source_file_path} to GCS: {e}\n{traceback.format_exc()}")
         raise ConnectionError(f"Failed to upload file to GCS: {e}") from e
 
+def clear_directory(dir_path):
+    """Removes all files and subdirectories within a given directory."""
+    if not os.path.exists(dir_path):
+        logging.warning(f"Directory not found, cannot clear: {dir_path}")
+        return
+    if not os.path.isdir(dir_path):
+        logging.error(f"Path is not a directory, cannot clear: {dir_path}")
+        return
+
+    logging.info(f"Clearing contents of directory: {dir_path}")
+    for filename in os.listdir(dir_path):
+        file_path = os.path.join(dir_path, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            logging.error(f'Failed to delete {file_path}. Reason: {e}')
+    logging.info(f"Finished clearing directory: {dir_path}")
+
 def get_chat_session(session_id, model_name, temperature, max_tokens, enabled_tool_name):
     """
     Gets or creates a chat session, applying config during creation.
@@ -170,6 +219,8 @@ def get_chat_session(session_id, model_name, temperature, max_tokens, enabled_to
         return chat
 
     # --- Create New Chat Session ---
+    # Initialize history store for the new session
+    CHAT_HISTORIES[session_id] = []
     logging.info(f"Creating new chat session for ID: {session_id} with model {model_name}, temp={temperature}, tokens={max_tokens}, tool='{enabled_tool_name}'")
 
     # Determine which tools to enable for this new session
@@ -205,13 +256,14 @@ def get_chat_session(session_id, model_name, temperature, max_tokens, enabled_to
 
 def cleanup_old_sessions():
     """Removes chat sessions inactive for > 1 hour."""
-    global CHAT_SESSIONS, SESSION_TIMESTAMPS
+    global CHAT_SESSIONS, SESSION_TIMESTAMPS, CHAT_HISTORIES
     cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     ids_to_remove = [sid for sid, ts in list(SESSION_TIMESTAMPS.items()) if ts < cutoff]
     count = 0
     for sid in ids_to_remove:
         CHAT_SESSIONS.pop(sid, None)
         SESSION_TIMESTAMPS.pop(sid, None)
+        CHAT_HISTORIES.pop(sid, None) # Remove history too
         count += 1
     if count > 0:
         logging.debug(f"Cleaned up {count} inactive chat session(s).") # Use debug level
@@ -248,6 +300,7 @@ def clear_chat():
     if session_id:
         CHAT_SESSIONS.pop(session_id, None)
         SESSION_TIMESTAMPS.pop(session_id, None)
+        CHAT_HISTORIES.pop(session_id, None) # Clear history too
         logging.info(f"Cleared chat session state for ID: {session_id}")
     return jsonify({"success": True, "message": "Chat cleared."})
 
@@ -326,11 +379,24 @@ def chat_endpoint():
              return jsonify({"error": "No valid content to send after processing uploads."}), 400
 
         # Ensure chat_session is valid before sending message
+        # Also ensure history store exists for this session_id
+        if session_id not in CHAT_HISTORIES:
+             # This might happen if session expired/cleared between requests
+             # Reinitialize history, although this might lead to inconsistencies
+             # A better approach might be to force a new chat or return an error
+             logging.warning(f"Chat history missing for session {session_id}, reinitializing.")
+             CHAT_HISTORIES[session_id] = []
+
         if not chat_session:
             logging.error(f"Chat session is None for session ID: {session_id}. Cannot send message.")
             return jsonify({"error": "Chat session initialization failed previously. Please start a new chat."}), 500
 
-        # Send to Model (Config is part of chat_session now)
+        # --- Add User Turn to History BEFORE sending --- (Use the original parts)
+        user_content = Content(role="user", parts=current_turn_parts)
+        CHAT_HISTORIES[session_id].append(user_content)
+        # print(f"[Chat] Added user turn to history: {user_content}") # Debug
+
+        # --- Send to Model --- (Config is part of chat_session now)
         logging.debug(f"Sending message to chat session {session_id} with {len(current_turn_parts)} parts.") # Use debug level
         response = chat_session.send_message(current_turn_parts) # No config needed here
         logging.debug(f"Received response from chat session {session_id}") # Use debug level
@@ -349,6 +415,10 @@ def chat_endpoint():
 
                 # --- Process Parts (Check content exists first) ---
                 if hasattr(candidate, 'content'):
+                    # --- Add Model Turn to History --- (Do this early)
+                    if candidate.content:
+                        CHAT_HISTORIES[session_id].append(candidate.content)
+                        # print(f"[Chat] Added model turn to history: {candidate.content}") # Debug
                     # Check if content and parts exist before logging length
                     if candidate.content and candidate.content.parts:
                         logging.debug(f"--- Raw Response Parts ({len(candidate.content.parts)}) ---") # Debug level
@@ -579,6 +649,79 @@ def chat_endpoint():
                     except OSError as e_clean: logging.error(f"Error deleting local temp file {path}: {e_clean}")
         logging.info(f"Returning error payload to frontend: {error_payload}")
         return jsonify(error_payload), 500 # Return 500 for server-side errors
+
+@app.route('/count_tokens', methods=['POST'])
+def count_tokens_endpoint():
+    """Counts tokens in the current chat history plus pending text."""
+    if not genai_client:
+        return jsonify({"error": "GenAI client not initialized"}), 500
+    if CHAT_PASSWORD and not session.get('is_authenticated'):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    session_id = session.get('chat_session_id')
+    data = request.get_json()
+    pending_text = data.get('pending_text', '') if data else ''
+
+    contents_to_count = []
+    chat_session = None
+
+    # 1. Get existing history from our manual store
+    if session_id and session_id in CHAT_HISTORIES:
+        contents_to_count.extend(CHAT_HISTORIES[session_id])
+        # print(f"[count_tokens] History length: {len(chat_session.history)}")
+
+    # 2. Add pending user text if present
+    if pending_text:
+        # Construct a Content object for the pending text
+        pending_content = Content(role="user", parts=[Part(text=pending_text)])
+        contents_to_count.append(pending_content)
+        # print(f"[count_tokens] Added pending text.")
+
+    # 3. If nothing to count, return 0
+    if not contents_to_count:
+        # print("[count_tokens] Nothing to count.")
+        return jsonify({"total_tokens": 0})
+
+    # 4. Determine model to use
+    # Use model from session if available, otherwise default
+    # Need to retrieve settings associated with session or use request? Let's assume default for now
+    # Or ideally, get model from client-side settings sent with request?
+    # For now, let's stick to using the default app model or fallback
+    model_to_use = DEFAULT_MODEL_NAME
+    fallback_model = "gemini-2.0-flash-001" # A generally available model
+
+    # print(f"[count_tokens] Contents to count: {contents_to_count}")
+    # print(f"[count_tokens] Attempting count with model: {model_to_use}")
+
+    # 5. Call count_tokens API
+    try:
+        response = genai_client.models.compute_tokens(model=model_to_use, contents=contents_to_count)
+        # Log all response attributes
+        logging.info("Token count response attributes:")
+        for tokens_info in response.tokens_info:
+            logging.info(f"  Role: {tokens_info.role}")
+            logging.info(f"  Token IDs: {tokens_info.token_ids}")
+            logging.info(f"  Tokens: {tokens_info.tokens}")
+        token_count = sum(len(info.tokens) for info in response.tokens_info)
+        logging.info(f"[count_tokens] Total token count: {token_count}")
+        return jsonify({"total_tokens": token_count})
+    except Exception as e_primary:
+        logging.warning(f"Token count failed for model '{model_to_use}': {e_primary}. Trying fallback '{fallback_model}'.")
+        try:
+            response = genai_client.models.compute_tokens(model=fallback_model, contents=contents_to_count)
+            # Log all response attributes
+            logging.info("Token count response attributes:")
+            for tokens_info in response.tokens_info:
+                logging.info(f"  Role: {tokens_info.role}")
+                logging.info(f"  Token IDs: {tokens_info.token_ids}")
+                logging.info(f"  Tokens: {tokens_info.tokens}")
+            token_count = sum(len(info.tokens) for info in response.tokens_info)
+            logging.info(f"[count_tokens] Total token count: {token_count}")
+            return jsonify({"total_tokens": token_count})
+        except Exception as e_fallback:
+            logging.error(f"Token count failed for fallback model '{fallback_model}': {e_fallback}")
+            return jsonify({"error": "Token counting failed for primary and fallback models."}), 500
+
 
 # --- Cleanup Scheduler ---
 if APScheduler_installed:
