@@ -16,8 +16,16 @@ load_dotenv()
 
 # --- Configuration ---
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
+if not PROJECT_ID:
+    raise ValueError("GOOGLE_CLOUD_PROJECT environment variable must be set")
 LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+if not os.getenv("GOOGLE_CLOUD_LOCATION"):
+    os.environ["GOOGLE_CLOUD_LOCATION"] = LOCATION
 DEFAULT_MODEL_NAME = os.getenv("GEMINI_AI_MODEL_NAME", "gemini-2.5-pro-preview-03-25")
+# Ensure GOOGLE_GENAI_USE_VERTEXAI is set to TRUE
+if not os.getenv("GOOGLE_GENAI_USE_VERTEXAI"):
+    os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "TRUE"
+
 # Max output tokens configuration
 DEFAULT_MAX_TOKENS = 20000
 MAX_TOKENS_LIMIT = 65536

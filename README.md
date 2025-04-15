@@ -27,12 +27,13 @@ This application provides a user-friendly interface with features like file uplo
 * **Enabled APIs:** Ensure the **Vertex AI API** is enabled in your Google Cloud project. For deployment, you'll also need **Artifact Registry API** and **Cloud Run API** enabled.
 * **`gcloud` CLI:** The Google Cloud command-line tool installed and initialized. [Installation Guide](https://cloud.google.com/sdk/docs/install)
 * **Authentication:** Application Default Credentials (ADC) configured for your local environment or appropriate service account credentials for deployment.
+* **Docker:** Docker installed locally for building the container image. [Installation Guide](https://docs.docker.com/engine/install/)
 
 ## Local Setup & Usage
 
 1.  **Clone the Repository:**
     ```bash
-    git clone <your-repository-url>
+    git clone [https://github.com/willspag/gemini-chat.git](https://github.com/willspag/gemini-chat.git)
     cd gemini-chat
     ```
 
@@ -49,18 +50,18 @@ This application provides a user-friendly interface with features like file uplo
     ```plaintext
     # .env Example
     # Required: Google Cloud Project ID
-    GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
+    GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 
     # Optional: Google Cloud Location (defaults to us-central1 if not set)
-    GOOGLE_CLOUD_LOCATION="us-central1"
+    GOOGLE_CLOUD_LOCATION=us-central1
 
     # Optional: Default Gemini AI Model Name (overridable via UI settings)
     # Defaults to gemini-2.5-pro-preview-03-25 if not set
-    # GEMINI_AI_MODEL_NAME="gemini-1.5-flash-001"
+    # GEMINI_AI_MODEL_NAME=gemini-2.5-pro-preview-03-25
 
     # Optional: Default Max Output Tokens (overridable via UI settings)
     # Defaults to 20000 if not set (valid range 2048-65536)
-    # MAX_OUTPUT_TOKENS=8192
+    # MAX_OUTPUT_TOKENS=20000
 
     # Required: Flask Secret Key (generate a strong random key)
     # Example generation: python -c 'import secrets; print(secrets.token_hex(16))'
@@ -100,72 +101,64 @@ This application includes a `Dockerfile` configured for deployment to Google Clo
     * Ensure the **Vertex AI API**, **Artifact Registry API**, and **Cloud Run API** are enabled in your Google Cloud project.
     * Authenticate Docker with Google Artifact Registry (you only need to do this once per region):
         ```bash
-        gcloud auth configure-docker us-central1-docker.pkg.dev # Replace us-central1 if needed
+        # Replace [YOUR_REGION] if different from us-central1
+        gcloud auth configure-docker us-central1-docker.pkg.dev
         ```
 
 2.  **Set Your Project ID:**
     ```bash
-    gcloud config set project YOUR_PROJECT_ID
+    gcloud config set project [YOUR_PROJECT_ID]
     ```
 
 3.  **(Optional) Create Artifact Registry Repository:**
-    If you don't have a Docker repository yet:
+    If you don't have a Docker repository named `gemini-chat-repo` in `us-central1` yet:
     ```bash
     gcloud artifacts repositories create gemini-chat-repo \
         --repository-format=docker \
         --location=us-central1 \
         --description="Docker repository for gemini-chat app"
-    # Replace 'us-central1' and 'gemini-chat-repo' as needed
+    # Adjust --location and repository name if desired
     ```
 
 4.  **Build the Docker Image:**
-    Replace placeholders with your details.
     ```bash
-    export PROJECT_ID=$(gcloud config get-value project)
-    export REGION="us-central1" # Or your preferred region
-    export REPO_NAME="gemini-chat-repo" # Your repository name
-    export IMAGE_NAME="gemini-chat-app"
-    export IMAGE_TAG="v1.0" # Or your desired tag
-
-    docker build -t ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${IMAGE_NAME}:${IMAGE_TAG} .
+    docker build -t gemini-chat-image .
     ```
 
-5.  **Push the Image to Artifact Registry:**
+5.  **Tag the Image:**
+    Replace `[YOUR_PROJECT_ID]` and `[YOUR_VERSION_NUMBER]` (e.g., `v1.0`). Ensure region and repo name match step 3 if changed.
     ```bash
-    docker push ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${IMAGE_NAME}:${IMAGE_TAG}
+    docker tag gemini-chat-image us-central1-docker.pkg.dev/[YOUR_PROJECT_ID]/gemini-chat-repo/gemini-chat-image:v[YOUR_VERSION_NUMBER]
     ```
 
-6.  **Deploy to Cloud Run:**
-    This command deploys the image and sets essential environment variables.
-
+6.  **Push the Image to Artifact Registry:**
+    Replace placeholders as in the previous step.
     ```bash
-    gcloud run deploy gemini-chat-service \
-        --image=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${IMAGE_NAME}:${IMAGE_TAG} \
+    docker push us-central1-docker.pkg.dev/[YOUR_PROJECT_ID]/gemini-chat-repo/gemini-chat-image:v[YOUR_VERSION_NUMBER]
+    ```
+
+7.  **Deploy to Cloud Run:**
+    Replace placeholders. Choose a `[YOUR_SERVICE_NAME]`.
+    ```bash
+    gcloud run deploy [YOUR_SERVICE_NAME] \
+        --image=us-central1-docker.pkg.dev/[YOUR_PROJECT_ID]/gemini-chat-repo/gemini-chat-image:v[YOUR_VERSION_NUMBER] \
         --platform=managed \
-        --region=${REGION} \
+        --region=us-central1 \
         --allow-unauthenticated \
-        --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
-        --set-env-vars="GOOGLE_CLOUD_LOCATION=${REGION}" \
-        --set-env-vars="GEMINI_AI_MODEL_NAME=gemini-2.5-pro-preview-03-25" \
-        --set-env-vars="FLASK_SECRET_KEY=YOUR_STRONG_FLASK_SECRET" \
-        --set-env-vars="CHAT_PASSWORD=YOUR_APPLICATION_PASSWORD" \
-        # Add other optional env vars like MAX_OUTPUT_TOKENS if needed
-        # Example: --set-env-vars="MAX_OUTPUT_TOKENS=16384"
+        # --port=8080 # Optional: Gunicorn in Dockerfile already uses 8080
 
-    # Notes on gcloud run deploy:
-    #   --service-name: Choose a name for your service (e.g., gemini-chat-service).
-    #   --allow-unauthenticated: Allows public access. Remove this flag and configure IAM for private access.
-    #   --set-env-vars: Used to set environment variables securely. Repeat for each variable.
-    #   Replace YOUR_STRONG_FLASK_SECRET and YOUR_APPLICATION_PASSWORD with secure values.
-    #   Consider using Google Secret Manager for highly sensitive values and referencing them in Cloud Run.
+    # Notes:
+    #   --allow-unauthenticated: Allows public access. Remove for private access (requires IAM configuration).
+    #   --region: Ensure this matches your Artifact Registry region.
     ```
+    **IMPORTANT:** This command only deploys the image. You **must** configure the necessary **Environment Variables** (like `GOOGLE_CLOUD_PROJECT`, `FLASK_SECRET_KEY`, `CHAT_PASSWORD`, `GEMINI_AI_MODEL_NAME`) separately in the Cloud Run service settings via the Google Cloud Console UI or using `gcloud run services update [YOUR_SERVICE_NAME] --update-env-vars ...` for the application to function correctly. **Do not rely on the `.env` file for production deployment.**
 
-7.  **Access Deployed App:** After deployment, `gcloud` will provide the URL for your service.
+8.  **Access Deployed App:** After deployment, `gcloud` will provide the URL for your service.
 
 ## Configuration
 
 * **Local:** Configure via the `.env` file as described in the Setup section.
-* **Cloud Run:** Configure via Environment Variables set during deployment (see Deployment section). **Do not** include secrets in your `.env` file when building the Docker image for production.
+* **Cloud Run:** Configure via **Environment Variables** set in the Cloud Run service configuration (via UI or `gcloud`). This is the recommended and secure way for production.
 
 ## Contributing
 
