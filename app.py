@@ -392,9 +392,31 @@ def chat_endpoint():
             return jsonify({"error": "Chat session initialization failed previously. Please start a new chat."}), 500
 
         # --- Add User Turn to History BEFORE sending --- (Use the original parts)
-        user_content = Content(role="user", parts=current_turn_parts)
-        CHAT_HISTORIES[session_id].append(user_content)
-        # print(f"[Chat] Added user turn to history: {user_content}") # Debug
+        # Convert all parts in current_turn_parts to actual Part objects for history
+        history_parts = []
+        for item in current_turn_parts:
+            if isinstance(item, str):
+                history_parts.append(Part(text=item))
+            elif isinstance(item, types.File):
+                 # Check if File object has necessary attributes (uri, mime_type)
+                 if hasattr(item, 'uri') and hasattr(item, 'mime_type'):
+                     # Create a Part containing the File object via file_data
+                     # Note: The SDK might prefer wrapping File directly if supported,
+                     # but file_data is explicitly documented for Content parts.
+                     # Let's try wrapping directly first as it's simpler.
+                     history_parts.append(Part(file_data=item))
+                 else:
+                     logging.warning(f"Skipping invalid File object in history: {item}")
+            else:
+                 # Handle other potential types or log warning
+                 logging.warning(f"Skipping unknown type in current_turn_parts for history: {type(item)}")
+
+        if history_parts: # Only add if there are valid parts
+            user_content = Content(role="user", parts=history_parts)
+            CHAT_HISTORIES[session_id].append(user_content)
+            # print(f"[Chat] Added user turn to history: {user_content}") # Debug
+        else:
+            logging.warning("No valid user parts generated for history.")
 
         # --- Send to Model --- (Config is part of chat_session now)
         logging.debug(f"Sending message to chat session {session_id} with {len(current_turn_parts)} parts.") # Use debug level
@@ -652,75 +674,100 @@ def chat_endpoint():
 
 @app.route('/count_tokens', methods=['POST'])
 def count_tokens_endpoint():
-    """Counts tokens in the current chat history plus pending text."""
-    if not genai_client:
-        return jsonify({"error": "GenAI client not initialized"}), 500
+    """Counts tokens in the current chat history plus pending text/files."""
+    local_temp_files_to_clean = []
+    gcs_temp_blobs_to_clean = []
+    if not genai_client or not storage_client:
+        return jsonify({"error": "Backend client not initialized"}), 500
     if CHAT_PASSWORD and not session.get('is_authenticated'):
         return jsonify({"error": "Not authenticated"}), 401
 
-    session_id = session.get('chat_session_id')
-    data = request.get_json()
-    pending_text = data.get('pending_text', '') if data else ''
-
-    contents_to_count = []
-    chat_session = None
-
-    # 1. Get existing history from our manual store
-    if session_id and session_id in CHAT_HISTORIES:
-        contents_to_count.extend(CHAT_HISTORIES[session_id])
-        # print(f"[count_tokens] History length: {len(chat_session.history)}")
-
-    # 2. Add pending user text if present
-    if pending_text:
-        # Construct a Content object for the pending text
-        pending_content = Content(role="user", parts=[Part(text=pending_text)])
-        contents_to_count.append(pending_content)
-        # print(f"[count_tokens] Added pending text.")
-
-    # 3. If nothing to count, return 0
-    if not contents_to_count:
-        # print("[count_tokens] Nothing to count.")
-        return jsonify({"total_tokens": 0})
-
-    # 4. Determine model to use
-    # Use model from session if available, otherwise default
-    # Need to retrieve settings associated with session or use request? Let's assume default for now
-    # Or ideally, get model from client-side settings sent with request?
-    # For now, let's stick to using the default app model or fallback
-    model_to_use = DEFAULT_MODEL_NAME
-    fallback_model = "gemini-2.0-flash-001" # A generally available model
-
-    # print(f"[count_tokens] Contents to count: {contents_to_count}")
-    # print(f"[count_tokens] Attempting count with model: {model_to_use}")
-
-    # 5. Call count_tokens API
+    
+    total_token_count = 0
     try:
-        response = genai_client.models.compute_tokens(model=model_to_use, contents=contents_to_count)
-        # Log all response attributes
-        logging.info("Token count response attributes:")
-        for tokens_info in response.tokens_info:
-            logging.info(f"  Role: {tokens_info.role}")
-            logging.info(f"  Token IDs: {tokens_info.token_ids}")
-            logging.info(f"  Tokens: {tokens_info.tokens}")
-        token_count = sum(len(info.tokens) for info in response.tokens_info)
-        logging.info(f"[count_tokens] Total token count: {token_count}")
-        return jsonify({"total_tokens": token_count})
-    except Exception as e_primary:
-        logging.warning(f"Token count failed for model '{model_to_use}': {e_primary}. Trying fallback '{fallback_model}'.")
+        session_id = session.get('chat_session_id')
+        pending_text = request.form.get('pending_text', '') # Get text from form
+        pending_files = request.files.getlist('pending_files') # Get files
+        contents_to_count = []
+        # 1. Get existing history from our manual store and extract all parts
+        all_parts = []
+        if session_id and session_id in CHAT_HISTORIES:
+            for content in CHAT_HISTORIES[session_id]:
+                all_parts.extend(content)
+                    
+
+        # 2. Process pending text and files
+        if pending_text:
+            all_parts.append(pending_text)
+
+        if pending_files:
+            os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+            for file in pending_files:
+                if file and allowed_file(file.filename):
+                    temp_local_filename = secure_filename(f"count_temp_{uuid.uuid4()}_{file.filename}")
+                    local_filepath = os.path.join(app.config['UPLOAD_FOLDER'], temp_local_filename)
+                    local_temp_files_to_clean.append(local_filepath)
+                    try:
+                        file.save(local_filepath)
+                        mime_type = mimetypes.guess_type(local_filepath)[0] or 'application/octet-stream'
+                        gcs_blob_name = f"temp_token_count/{session_id or 'no_session'}/{uuid.uuid4()}_{temp_local_filename}"
+                        gcs_temp_blobs_to_clean.append(gcs_blob_name)
+                        gcs_uri = upload_to_gcs(local_filepath, gcs_blob_name)
+                        file_part = types.File(uri=gcs_uri, mime_type=mime_type)
+                        all_parts.append(file_part)
+                    except Exception as upload_err:
+                        logging.error(f"Error processing file {file.filename} for token count: {upload_err}")
+                        continue
+                elif file:
+                    logging.warning(f"Skipping disallowed file type for token count: {file.filename}")
+
+        # 3. Create a Content object with all parts for token counting
+        if len(all_parts) == 0:
+            return jsonify({"total_tokens": 0})
+
+        # 5. Determine model to use
+        model_to_use = DEFAULT_MODEL_NAME
+        fallback_model = "gemini-2.0-flash-001" # Reverted fallback to 1.5 flash
+
+        # 6. Call count_tokens API (genai_client.models.compute_tokens)
         try:
-            response = genai_client.models.compute_tokens(model=fallback_model, contents=contents_to_count)
-            # Log all response attributes
-            logging.info("Token count response attributes:")
-            for tokens_info in response.tokens_info:
-                logging.info(f"  Role: {tokens_info.role}")
-                logging.info(f"  Token IDs: {tokens_info.token_ids}")
-                logging.info(f"  Tokens: {tokens_info.tokens}")
-            token_count = sum(len(info.tokens) for info in response.tokens_info)
+            response = genai_client.models.count_tokens(model=model_to_use, contents=all_parts)
+            # Get the total token count from the response
+            token_count = response.total_tokens
             logging.info(f"[count_tokens] Total token count: {token_count}")
             return jsonify({"total_tokens": token_count})
-        except Exception as e_fallback:
-            logging.error(f"Token count failed for fallback model '{fallback_model}': {e_fallback}")
-            return jsonify({"error": "Token counting failed for primary and fallback models."}), 500
+        except Exception as e_primary:
+            logging.warning(f"Token count failed for model '{model_to_use}': {e_primary}. Trying fallback '{fallback_model}'.")
+            try:
+                response = genai_client.models.count_tokens(model=fallback_model, contents=all_parts)
+                # Get the total token count from the response
+                token_count = response.total_tokens
+                logging.info(f"[count_tokens] Total token count: {token_count}")
+                return jsonify({"total_tokens": token_count})
+            except Exception as e_fallback:
+                logging.error(f"Token count failed for fallback model '{fallback_model}': {e_fallback}")
+                return jsonify({"error": "Token counting failed for primary and fallback models."}), 500
+        
+    finally:
+        # --- Cleanup Temporary Files ---
+        for local_path in local_temp_files_to_clean:
+            if os.path.exists(local_path):
+                try: os.remove(local_path)
+                except OSError as e: logging.error(f"Error deleting local temp file {local_path}: {e}")
+
+        if gcs_temp_blobs_to_clean and storage_client and GCLOUD_BUCKET_NAME:
+            try:
+                bucket = storage_client.bucket(GCLOUD_BUCKET_NAME)
+                for blob_name in gcs_temp_blobs_to_clean:
+                    try:
+                        blob = bucket.blob(blob_name)
+                        blob.delete()
+                    except gcp_exceptions.NotFound:
+                        logging.warning(f"GCS temp blob not found for deletion: {blob_name}")
+                    except Exception as e_gcs_del:
+                        logging.error(f"Error deleting GCS temp blob {blob_name}: {e_gcs_del}")
+            except Exception as e_bucket:
+                logging.error(f"Error accessing GCS bucket '{GCLOUD_BUCKET_NAME}' for cleanup: {e_bucket}")
 
 
 # --- Cleanup Scheduler ---

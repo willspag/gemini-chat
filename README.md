@@ -161,7 +161,7 @@ This application includes a `Dockerfile` configured for deployment to Google Clo
 * **Cloud Run:** Configure via **Environment Variables** set in the Cloud Run service configuration (via UI or `gcloud`). This is the recommended and secure way for production.
 
 ## To-Do
-* Add inline citations and specific urls to messages using GoogleSearch tool grounding
+* Make token counts include file/image uploads too
 
 ## Contributing
 

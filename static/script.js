@@ -800,20 +800,27 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Function to Call the Token Counting Endpoint ---
     async function updateTokenCount() {
         if (!promptInput || !tokenCountDisplay || (!isAuthenticated && window.passwordRequired)) {
-            return; // Don't count if input missing, display missing, or not authenticated
+            if (tokenCountDisplay) tokenCountDisplay.textContent = ''; // Clear if not authenticated or input missing
+            return;
         }
 
         const pendingText = promptInput.value;
+        const pendingFiles = [...attachedFiles]; // Get currently attached files
 
         // Display a loading state immediately
         tokenCountDisplay.textContent = 'Tokens: calculating...';
-        tokenCountDisplay.classList.remove('text-red-500');
 
         try {
+            const formData = new FormData();
+            formData.append('pending_text', pendingText);
+            pendingFiles.forEach(file => {
+                formData.append('pending_files', file, file.name);
+            });
+
             const response = await fetch('/count_tokens', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pending_text: pendingText })
+                // Headers are set automatically by browser for FormData
+                body: formData
             });
 
             if (!response.ok) {
