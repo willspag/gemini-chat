@@ -160,6 +160,9 @@ This application includes a `Dockerfile` configured for deployment to Google Clo
 * **Local:** Configure via the `.env` file as described in the Setup section.
 * **Cloud Run:** Configure via **Environment Variables** set in the Cloud Run service configuration (via UI or `gcloud`). This is the recommended and secure way for production.
 
+## To-Do
+* Add inline citations and specific urls to messages using GoogleSearch tool grounding
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit pull requests or open issues.

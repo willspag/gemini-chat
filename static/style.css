@@ -1,26 +1,96 @@
-/* static/style.css */
+/* static/style.css - Fully Implemented */
 
-/* Add any custom CSS overrides or styles here if needed. */
-/* Tailwind handles most styling via classes in the HTML. */
-
-/* Example: Customize scrollbar for Firefox */
+/* Basic scrollbar styling - WebKit */
+::-webkit-scrollbar {
+    width: 8px;
+}
+::-webkit-scrollbar-track {
+    background: transparent; /* Works okay for both light/dark */
+}
+::-webkit-scrollbar-thumb {
+    background-color: #5f6368; /* Dark grey thumb */
+    border-radius: 20px;
+    border: 2px solid transparent; /* Creates padding around thumb */
+    background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+    background-color: #9aa0a6; /* Lighter grey on hover */
+}
+/* Firefox scrollbar */
 body {
     scrollbar-width: thin;
     scrollbar-color: #5f6368 transparent; /* thumb track */
 }
 
-/* Ensure textarea doesn't have extra bottom margin/padding pushing layout */
-textarea {
-    vertical-align: bottom;
+/* Ensure html/body take full height and prevent body scroll */
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
 }
 
-/* Ensure file preview area doesn't collapse when empty */
-#file-preview-area:empty {
-    display: none; /* Hide if empty */
+/* Main content area height calculation */
+/* Adjust header/footer heights if they change */
+main {
+    height: calc(100vh - 57px - 95px); /* vh - approx header height - approx footer height */
+    /* Or use flex-grow in the body's flex layout */
 }
-#file-preview-area:not(:empty) {
-     margin-bottom: 0.5rem; /* Add margin only when it has content */
-     padding-top: 0.25rem; /* Add some padding above previews */
+#chat-container {
+     height: 100%; /* Let flexbox handle height within main */
+}
+
+
+/* Style for prose (markdown) - Base */
+.prose {
+    color: inherit; /* Inherit text color for dark/light mode */
+}
+/* Remove backticks from inline code */
+.prose :where(code):not(:where([class~="not-prose"] *))::before,
+.prose :where(code):not(:where([class~="not-prose"] *))::after {
+    content: "";
+}
+/* Remove default prose background/padding for <pre> if using highlight.js theme */
+.prose :where(pre):not(:where([class~="not-prose"] *)) {
+     background-color: transparent;
+     color: inherit;
+     padding: 0;
+     overflow-x: visible; /* Let hljs handle scroll if needed */
+     margin-top: 0;
+     margin-bottom: 0;
+}
+ /* Ensure highlighted code block takes padding from highlight.js theme */
+.prose pre code.hljs {
+    padding: 1em; /* Add padding back via hljs class */
+    border-radius: 0.5rem; /* Add rounded corners */
+    display: block;
+    overflow-x: auto;
+}
+/* Dark mode prose adjustments */
+.dark .prose { color: #E8EAED; }
+.dark .prose :where(strong):not(:where([class~="not-prose"] *)) { color: #E8EAED; }
+.dark .prose :where(a):not(:where([class~="not-prose"] *)) { color: #8ab4f8; }
+.dark .prose :where(h1, h2, h3, h4, h5, h6):not(:where([class~="not-prose"] *)) { color: #E8EAED; }
+.dark .prose :where(blockquote):not(:where([class~="not-prose"] *)) { border-left-color: #5f6368; color: #bdc1c6; }
+
+/* Loading indicator styles (within send button) */
+.loader {
+    border: 3px solid #f3f3f3; /* Light grey */
+    border-top: 3px solid #4285F4; /* Blue */
+    border-radius: 50%;
+    width: 14px; /* Match size in HTML */
+    height: 14px; /* Match size in HTML */
+    animation: spin 1s linear infinite;
+    display: inline-block;
+    margin: 0; /* Reset margin if needed */
+}
+.dark .loader {
+     border: 3px solid #5f6368; /* Dark grey */
+     border-top: 3px solid #8ab4f8; /* Light blue */
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
 }
 
 /* Typing indicator animation */
@@ -31,27 +101,21 @@ textarea {
     border-radius: 50%;
     display: inline-block;
     margin: 0 1px;
-    /* Animation */
     animation-name: typing-bounce;
     animation-duration: 1.2s;
     animation-iteration-count: infinite;
     animation-timing-function: ease-in-out;
 }
-
 .typing-dot:nth-child(1) { animation-delay: -0.32s; }
 .typing-dot:nth-child(2) { animation-delay: -0.16s; }
 .typing-dot:nth-child(3) { animation-delay: 0s; }
 
 @keyframes typing-bounce {
-  0%, 80%, 100% {
-    transform: scale(0);
-  }
-  40% {
-    transform: scale(1.0);
-  }
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1.0); }
 }
 
-/* Basic styling for the details/summary */
+/* Details/Summary styling */
 details > summary {
     list-style: none; /* Remove default marker */
     cursor: pointer;
@@ -59,7 +123,6 @@ details > summary {
 details > summary::-webkit-details-marker {
     display: none; /* Hide default marker in WebKit */
 }
-/* Optional: Add a custom marker */
 details > summary::before {
     content: '▶'; /* Collapsed state */
     display: inline-block;
@@ -75,11 +138,149 @@ details > div {
     margin-top: 0.5rem; /* space above content */
     padding: 0.5rem 0.75rem; /* padding inside content */
     border-radius: 0.375rem; /* rounded-md */
-    /* Background is set via Tailwind classes in JS */
+    /* Background is set via Tailwind classes in JS/HTML */
 }
 /* Style list inside details */
 details > div ul {
-    list-style-type: disc; /* Example list style */
+    list-style-type: disc;
     padding-left: 1.5rem; /* Indent list items */
 }
 
+/* Basic Modal Styles */
+.modal-overlay {
+    position: fixed; inset: 0; background-color: rgba(0, 0, 0, 0.7);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; visibility: hidden; transition: opacity 0.3s ease, visibility 0.3s ease; z-index: 50;
+}
+.modal-overlay.active { opacity: 1; visibility: visible; }
+.modal-content {
+    /* background handled by tailwind classes */
+    padding: 1.5rem; border-radius: 0.5rem;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    max-width: 90%; width: 500px;
+    transform: scale(0.95); transition: transform 0.3s ease;
+}
+.modal-overlay.active .modal-content { transform: scale(1); }
+
+/* Style range input */
+ input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 8px; background: #ddd;
+    border-radius: 5px; outline: none; opacity: 0.7;
+    transition: opacity .2s; cursor: pointer;
+ }
+ input[type=range]:hover { opacity: 1; }
+ input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 18px; height: 18px; background: #4285F4; /* Gemini Blue */
+    border-radius: 50%; cursor: pointer;
+ }
+ input[type=range]::-moz-range-thumb {
+    width: 18px; height: 18px; background: #4285F4; /* Gemini Blue */
+    border-radius: 50%; cursor: pointer; border: none;
+ }
+ .dark input[type=range] { background: #555; }
+ .dark input[type=range]::-webkit-slider-thumb { background: #8ab4f8; } /* Lighter blue */
+ .dark input[type=range]::-moz-range-thumb { background: #8ab4f8; } /* Lighter blue */
+
+ /* Ensure send button icon/loader is centered */
+ #send-button i, #send-button .loader { margin: auto; }
+
+ /* Class to initially hide main content if password required */
+ .password-protected main, .password-protected footer#main-footer {
+     display: none; /* Hide until authenticated */
+ }
+
+ /* Code block wrapper for copy button */
+ .code-block-wrapper {
+     position: relative;
+     /* Use margins from prose/pre instead */
+     /* margin-top: 1em; */
+     /* margin-bottom: 1em; */
+ }
+ /* Copy button styles */
+ .copy-code-button {
+     position: absolute;
+     top: 0.5rem;
+     right: 0.5rem;
+     padding: 0.25rem 0.5rem;
+     border-radius: 0.375rem; /* rounded-md */
+     font-size: 0.75rem; /* text-xs */
+     cursor: pointer;
+     opacity: 0.3; /* Less obtrusive initially */
+     transition: opacity 0.2s ease-in-out, background-color 0.2s ease-in-out, color 0.2s ease-in-out;
+     /* Theming via Tailwind classes in JS */
+     display: inline-flex; /* Align icon and text */
+     align-items: center;
+ }
+ .code-block-wrapper:hover .copy-code-button { opacity: 1; } /* Show fully on hover */
+ .copy-code-button i { margin-right: 0.25rem; /* space between icon and text */ }
+
+/* Style for code execution results */
+pre.code-output {
+    background-color: #e8e8e8; /* Light grey background */
+    border: 1px solid #ccc;
+    padding: 0.5rem 0.75rem;
+    margin-top: 0.5em;
+    margin-bottom: 1em;
+    border-radius: 0.375rem; /* rounded-md */
+    white-space: pre-wrap; /* Wrap long lines */
+    word-wrap: break-word; /* Break long words */
+    font-family: monospace;
+    font-size: 0.875rem; /* text-sm */
+    color: #333; /* Darker text for contrast */
+}
+.dark pre.code-output {
+    background-color: #2a2a2a; /* Darker grey background */
+    border-color: #555;
+    color: #ccc; /* Lighter text */
+}
+/* Style for the strong tag inside code-output */
+pre.code-output strong {
+    display: block; /* Make label appear on its own line */
+    margin-bottom: 0.25rem;
+    font-weight: 600; /* semibold */
+    color: #555; /* Slightly darker label text */
+}
+.dark pre.code-output strong {
+     color: #aaa; /* Lighter label text in dark mode */
+}
+
+/* Ensure prose doesn't add extra margin to our wrapper */
+.prose .code-block-wrapper {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+/* Add margin back to the pre inside the wrapper if needed */
+.prose .code-block-wrapper pre {
+     margin-top: 1em !important; /* Use important if prose overrides */
+     margin-bottom: 1em !important;
+}
+
+/* Ensure Google Search Suggestions Carousel scrolls horizontally */
+.search-suggestions .carousel {
+    overflow-x: auto !important; /* Force horizontal scroll */
+    white-space: nowrap !important; /* Prevent wrapping */
+    scrollbar-width: thin; /* Use browser default thin scrollbar */
+    scrollbar-color: rgba(156, 163, 175, 0.5) transparent; /* thumb track (Tailwind gray-400/50%) */
+    padding-bottom: 8px; /* Add padding for the scrollbar */
+    margin-bottom: -8px; /* Counteract the padding to maintain layout */
+}
+
+/* Webkit specific scrollbar styling for the carousel */
+.search-suggestions .carousel::-webkit-scrollbar {
+    height: 6px; /* Slimmer scrollbar */
+}
+
+.search-suggestions .carousel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.search-suggestions .carousel::-webkit-scrollbar-thumb {
+    background-color: rgba(156, 163, 175, 0.5); /* Tailwind gray-400/50% */
+    border-radius: 10px;
+}
+
+.search-suggestions .carousel::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(156, 163, 175, 0.8); /* Tailwind gray-400/80% */
+}

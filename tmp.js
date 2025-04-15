@@ -1,3 +1,4 @@
+// Fully implemented version: Updated New Chat button logic.
 document.addEventListener('DOMContentLoaded', () => {
     // --- Element References & Null Checks ---
     const chatContainer = document.getElementById('chat-container');
@@ -421,13 +422,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 const data = await response.json();
-                console.log("[chatForm Submit] Data received after response.json():", data);
-
                 // Update displayed model name if backend used a different one (e.g., fallback)
                 if (data.model_used && headerModelDisplay && footerModelDisplay) {
-                    console.log("[chatForm Submit] Calling displayMessage with data:", data);
-                    displayMessage(null, [], 'model', data);
+                     headerModelDisplay.textContent = data.model_used;
+                     footerModelDisplay.textContent = data.model_used;
+                     // Optionally update currentSettings.modelName if you want the UI change to persist
+                     // currentSettings.modelName = data.model_used;
+                     // localStorage.setItem('chatSettings', JSON.stringify(currentSettings));
                 }
+                displayMessage(null, [], 'model', data.finish_reason, data.parts);
             } catch (fetchError) {
                 console.error('Fetch error:', fetchError);
                 removeTypingIndicator();
@@ -439,7 +442,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Display Messages ---
     function addInitialGreeting() {
-        console.log("[addInitialGreeting] Adding initial greeting if needed.");
          if (!chatContainer) return;
          if (chatContainer.children.length === 0 && isAuthenticated) {
               const greetingText = "Hello! How can I help you today?";
@@ -453,37 +455,17 @@ document.addEventListener('DOMContentLoaded', () => {
          }
     }
 
-    // Updated function signature to accept the full data object
-    function displayMessage(text, files = [], role, data = null) {
+    function displayMessage(text, files = [], role, finishReason = null, parts = []) {
          if (!chatContainer) { console.error("Cannot display message: chatContainer element not found."); return; }
-
-         console.log(`[displayMessage] Called for role: ${role}`);
-         console.log(`[displayMessage] Received text:`, text);
-         console.log(`[displayMessage] Received files:`, files);
-         console.log(`[displayMessage] Received data object:`, data);
-
-         // Extract parts, finishReason, and grounding from data if available
-         const parts = data?.parts || [];
-         const finishReason = data?.finish_reason || null;
-         const grounding = data?.grounding || null;
-
-         console.log(`[displayMessage] Extracted parts:`, parts);
-         console.log(`[displayMessage] Extracted finishReason:`, finishReason);
-         console.log(`[displayMessage] Extracted grounding:`, grounding);
 
          const messageDiv = document.createElement('div');
          messageDiv.className = `flex ${role === 'user' ? 'justify-end' : 'justify-start'} mb-4`;
          const bubbleDiv = document.createElement('div');
          bubbleDiv.className = `message-bubble max-w-xl lg:max-w-3xl p-3 rounded-lg shadow overflow-hidden ${role === 'user' ? 'bg-user-bg-light dark:bg-user-bg-dark' : 'bg-model-bg-light dark:bg-model-bg-dark'}`;
          let contentHTML = '';
-         let searchQueryHTML = ''; // For queries at the top
-         let otherGroundingHTML = ''; // For sources/suggestions at the bottom
-
-         console.log("[displayMessage] Starting role-based content processing...");
 
          // --- Render based on role ---
          if (role === 'user') {
-             console.log("[displayMessage] Processing USER role.");
              // User messages use 'text' and 'files' arguments
              if (files.length > 0) {
                  contentHTML += '<div class="flex flex-wrap gap-2 mb-2">';
@@ -498,57 +480,43 @@ document.addEventListener('DOMContentLoaded', () => {
                  contentHTML += '</div>';
              }
              if (text) {
-                 console.log("[displayMessage] User role: Adding text content.");
                  const escapedText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
                  contentHTML += `<p class="whitespace-pre-wrap">${escapedText}</p>`;
              } else if (files.length > 0 && !text) {
-                 console.log("[displayMessage] User role: Adding file count message.");
                  contentHTML += `<p class="italic text-sm text-gray-500 dark:text-gray-400">[Uploaded ${files.length} file(s)]</p>`;
              }
          } else { // Model or Error roles - process the 'parts' array
-             console.log(`[displayMessage] Processing ${role.toUpperCase()} role.`);
-
-             // --- Render Search Queries FIRST (if available) ---
-             if (grounding && grounding.web_search_queries && grounding.web_search_queries.length > 0) {
-                 console.log("[displayMessage] Adding web search queries at the top.");
-                 searchQueryHTML += `<div class="search-query-info mb-3 pb-2 border-b border-border-light/50 dark:border-border-dark/50 text-sm">`; // Border below queries
-                 searchQueryHTML += `<strong class="text-gray-700 dark:text-gray-300 font-semibold"><i class="fas fa-search text-xs mr-1 opacity-70"></i> Searched for:</strong>`;
-                 grounding.web_search_queries.forEach(query => {
-                     searchQueryHTML += `<span class="ml-1 italic bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 rounded text-xs text-gray-800 dark:text-gray-200">${query.replace(/</g, "&lt;")}</span>`;
-                 });
-                 searchQueryHTML += `</div>`;
-             }
-
-             // --- Process Main Content Parts ---
              if (parts && parts.length > 0) {
-                 console.log(`[displayMessage] ${role.toUpperCase()} role: Processing ${parts.length} part(s).`);
-                 parts.forEach((part, index) => {
-                     console.log(`[displayMessage] ${role.toUpperCase()} role: Processing part ${index + 1}/${parts.length}`, part);
+                 // console.log("Rendering received parts:", parts); // Optional log
+                 parts.forEach(part => {
+                     // console.log("Processing part:", part); // Optional log
                      switch (part.type) {
                          case 'text':
                              if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-                                 console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part. Input:`, part.content);
                                  const unsafeHTML = marked.parse(part.content || ""); // Use configured marked
-                                 console.log("Marked output (unsafeHTML):", unsafeHTML);
                                  const safeHTML = DOMPurify.sanitize(unsafeHTML);
-                                 console.log("DOMPurify output (safeHTML):", safeHTML);
                                  contentHTML += `<div class="prose dark:prose-invert max-w-none">${safeHTML}</div>`;
                              } else {
-                                 console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part with fallback. Input:`, part.content);
                                  contentHTML += `<p class="whitespace-pre-wrap">${(part.content || "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`; // Fallback
                              }
                              break;
                          case 'executable_code':
-                             const langClass = part.language ? `language-${part.language.toLowerCase()}` : 'language-plaintext'; // Ensure lowercase lang
+                             const langClass = part.language ? `language-${part.language}` : 'language-plaintext';
                              const escapedCode = (part.code || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                             contentHTML += `<div class="prose dark:prose-invert max-w-none"><pre><code class="${langClass}">${escapedCode}</code></pre></div>`;
+                             // Wrap manually for structure before highlighting
+                             contentHTML += `<div class="code-container my-2"><pre><code class="${langClass}">${escapedCode}</code></pre></div>`;
                              break;
                          case 'code_result':
                              const escapedOutput = (part.output || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
                              contentHTML += `<pre class="code-output bg-gray-100 dark:bg-gray-900 p-2 rounded text-sm whitespace-pre-wrap my-2"><strong>[Result: ${part.outcome || 'UNKNOWN'}]</strong>\n${escapedOutput}</pre>`;
                              break;
                          case 'image':
+                             // console.log("Rendering image part with URL:", part.url); // Optional log
                              contentHTML += `<img src="${part.url}" alt="Generated Image" class="max-w-full h-auto rounded my-2 block" onerror="this.alt='Error loading image'; this.style.display='none'; console.error('Error loading image:', this.src);">`; // Added onerror
+                             break;
+                          case 'search_suggestions': // Handle search suggestions
+                             // IMPORTANT: Insert HTML directly without sanitization
+                             contentHTML += `<div class="search-suggestions my-3">${part.html_content || ''}</div>`;
                              break;
                          default:
                              console.warn("Unknown part type received:", part.type);
@@ -556,100 +524,48 @@ document.addEventListener('DOMContentLoaded', () => {
                              contentHTML += `<p class="text-xs text-red-500">[Unsupported content type: ${part.type}]</p><pre class="text-xs">${escapedContent}</pre>`;
                      }
                  });
-             } else if (!searchQueryHTML) { // Add placeholder if no parts AND no search query shown
+             } else if (text) { // Fallback for simple error messages passed as text
+                 contentHTML += `<p class="whitespace-pre-wrap">${text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`;
+             } else {
                  contentHTML += `<p>[No content received]</p>`;
              }
 
-             // --- Render Other Grounding Info (Sources, Suggestions) at the bottom ---
-             if (grounding) {
-                 console.log(`[displayMessage] ${role.toUpperCase()} role: Handling bottom grounding info.`);
-                 let addedSeparator = false;
-
-                 // Container for bottom grounding info (only add if needed)
-                 let bottomGroundingContainer = '';
-
-                 // Display Grounding Chunks (Sources)
-                 if (grounding.grounding_chunks && grounding.grounding_chunks.length > 0) {
-                     console.log("[displayMessage] Adding grounding chunks (sources).");
-                     let sourcesHTML = `<div class="mb-2">`;
-                     sourcesHTML += `<strong class="text-gray-700 dark:text-gray-300 font-semibold"><i class="fas fa-link text-xs mr-1 opacity-70"></i> Sources:</strong>`;
-                     sourcesHTML += `<ul class="list-none pl-2 mt-1 text-xs space-y-1">`;
-                     grounding.grounding_chunks.forEach((chunk, index) => {
-                         const title = chunk.title ? chunk.title.replace(/</g, "&lt;") : 'Source';
-                         const domain = chunk.domain ? `<span class="text-gray-500 dark:text-gray-400 ml-1">(${chunk.domain.replace(/</g, "&lt;")})</span>` : '';
-                         sourcesHTML += `<li><a href="${chunk.uri}" target="_blank" rel="noopener noreferrer" class="text-blue-600 dark:text-blue-400 hover:underline">${title}</a>${domain}</li>`;
-                     });
-                     sourcesHTML += `</ul></div>`;
-                     bottomGroundingContainer += sourcesHTML;
-                     addedSeparator = true;
-                 }
-
-                 // Display Search Suggestions (Rendered Content)
-                 if (grounding.search_suggestions_html) {
-                     console.log("[displayMessage] Adding search suggestions HTML.");
-                     let suggestionsHTML = `<div class="search-suggestions">`;
-                     if(addedSeparator) suggestionsHTML = `<div class="mt-2 pt-2 border-t border-border-light/50 dark:border-border-dark/50">` + suggestionsHTML; // Add separator if sources shown
-
-                     suggestionsHTML += `<strong class="text-gray-700 dark:text-gray-300 font-semibold text-xs block mb-1"><i class="fas fa-lightbulb text-xs mr-1 opacity-70"></i> Related:</strong>`;
-                     // IMPORTANT: Insert HTML directly - Assume safe from Google
-                     suggestionsHTML += grounding.search_suggestions_html;
-                     suggestionsHTML += `</div>`;
-                     bottomGroundingContainer += suggestionsHTML;
-                     addedSeparator = true; // Ensure separator added if *only* suggestions exist
-                 }
-
-                 // Add the container only if it has content
-                 if(bottomGroundingContainer) {
-                     otherGroundingHTML = `<div class="grounding-info mt-3 pt-3 border-t border-border-light dark:border-border-dark text-sm">${bottomGroundingContainer}</div>`;
-                 }
-             }
-
-             // Finish Reason (Append after primary content, before grounding info)
+             // Finish Reason (Append after processing parts)
              if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS' && finishReason !== 'FINISH_REASON_UNSPECIFIED') {
-                 console.log("[displayMessage] Adding Finish Reason.");
-                 contentHTML += `<p class="text-xs text-gray-500 dark:text-gray-400 mt-2 pt-1">Finish Reason: ${finishReason}</p>`;
+                 contentHTML += `<p class="text-xs text-gray-500 dark:text-gray-400 mt-2 border-t border-border-light dark:border-border-dark pt-1">Finish Reason: ${finishReason}</p>`;
              }
          }
 
          // Error Styling
          if (role === 'error') {
-              console.log("[displayMessage] Applying error styling.");
-               bubbleDiv.classList.add('bg-red-100', 'dark:bg-red-900', 'text-red-700', 'dark:text-red-300');
+              bubbleDiv.classList.add('bg-red-100', 'dark:bg-red-900', 'text-red-700', 'dark:text-red-300');
          }
 
-         // Set bubble content (main content + grounding info)
-         console.log("[displayMessage] Setting bubble innerHTML. searchQueryHTML:", searchQueryHTML);
-         console.log("[displayMessage] Setting bubble innerHTML. contentHTML:", contentHTML);
-         console.log("[displayMessage] Setting bubble innerHTML. otherGroundingHTML:", otherGroundingHTML);
-         bubbleDiv.innerHTML = searchQueryHTML + contentHTML + otherGroundingHTML;
+         // Set bubble content
+         bubbleDiv.innerHTML = contentHTML;
          messageDiv.appendChild(bubbleDiv);
          chatContainer.appendChild(messageDiv);
 
-         console.log("[displayMessage] Applying highlighting and copy buttons if needed.");
-
          // Apply Syntax Highlighting and Add Copy Buttons AFTER rendering
-         if (role === 'model') { // Only apply to model responses now
-             try {
-                 if (typeof hljs !== 'undefined') {
-                     highlightCodeInElement(bubbleDiv);
-                 }
-                 addCopyButtonsToCodeBlocks(bubbleDiv);
-             } catch(e) {
-                 console.error("Error applying highlighting or copy buttons:", e);
-             }
+         if (role === 'model' || role === 'error') {
+            try {
+                if (typeof hljs !== 'undefined') {
+                    highlightCodeInElement(bubbleDiv);
+                }
+                addCopyButtonsToCodeBlocks(bubbleDiv);
+            } catch(e) {
+                console.error("Error applying highlighting or copy buttons:", e);
+            }
          }
 
-         console.log("[displayMessage] Scrolling to bottom.");
          scrollToBottom();
     }
 
     // --- Apply Syntax Highlighting ---
     function highlightCodeInElement(containerElement) {
-        console.log("[highlightCodeInElement] Highlighting code in element:", containerElement);
         if (typeof hljs === 'undefined') { return; } // Guard clause
         // Find code blocks that haven't been highlighted yet
         const codeBlocks = containerElement.querySelectorAll('pre code:not(.hljs)');
-        console.log(`[highlightCodeInElement] Found ${codeBlocks.length} code blocks to highlight.`);
         codeBlocks.forEach((codeElement) => {
             try {
                  hljs.highlightElement(codeElement);
@@ -663,14 +579,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Add Copy Buttons ---
     function addCopyButtonsToCodeBlocks(containerElement) {
         // Add check for clipboard API support
-        console.log("[addCopyButtonsToCodeBlocks] Adding copy buttons in element:", containerElement);
         if (typeof navigator.clipboard === 'undefined' || typeof navigator.clipboard.writeText === 'undefined') {
              console.warn("Clipboard API (writeText) not available, copy buttons will not function correctly.");
              // return; // Decide whether to add non-functional buttons or not
         }
         // Find PRE elements that likely contain code (have a CODE child with a language class)
         const codeBlocks = containerElement.querySelectorAll('pre code[class*="language-"]');
-        console.log(`[addCopyButtonsToCodeBlocks] Found ${codeBlocks.length} code blocks to add buttons to.`);
         codeBlocks.forEach(codeElement => {
             const preElement = codeElement.parentNode; // Get the parent <pre>
             if (!preElement || preElement.tagName !== 'PRE') return; // Ensure parent is <pre>
@@ -751,7 +665,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
      // --- Utility Functions ---
     function setLoading(isLoading) {
-         console.log(`[setLoading] Setting loading state to: ${isLoading}`);
          if (!sendButton || !sendIcon || !loadingIndicator) return;
          if (isLoading) {
              sendIcon.classList.add('hidden');
@@ -766,14 +679,12 @@ document.addEventListener('DOMContentLoaded', () => {
          }
      }
     function scrollToBottom() {
-         // console.log("[scrollToBottom] Scrolling..."); // Can be noisy, uncomment if needed
          if(chatContainer) chatContainer.scrollTop = chatContainer.scrollHeight;
      }
 
     // --- Enter Key Listener ---
     if (promptInput) {
         promptInput.addEventListener('keydown', (event) => {
-            // console.log(`[keydown] Key pressed: ${event.key}, Shift: ${event.shiftKey}`); // Can be noisy
             if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault(); // Prevent newline
                 // Trigger button click only if it's not disabled

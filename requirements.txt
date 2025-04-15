@@ -8,3 +8,10 @@ google-genai==1.10.0
 
 # Production WSGI Server
 gunicorn==23.0.0
+
+# Google Cloud Storage
+google-cloud-storage==3.1.0
+
+# Scheduler
+APScheduler==3.11.0
+
