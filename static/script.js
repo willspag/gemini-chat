@@ -1,4 +1,4 @@
-// Fully implemented version: All features and fixes included, no placeholders.
+// Fully implemented version: All features and fixes included, NO placeholders.
 document.addEventListener('DOMContentLoaded', () => {
     // --- Element References & Null Checks ---
     const chatContainer = document.getElementById('chat-container');
@@ -43,7 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!element) {
             console.error(`Initialization Error: Element with ID/selector for '${name}' not found.`);
             allElementsFound = false;
-            // You might want to display a user-facing error if critical elements like chatContainer are missing
+            // Displaying a user-facing error might be appropriate here if critical elements are missing
         }
     }
 
@@ -56,8 +56,33 @@ document.addEventListener('DOMContentLoaded', () => {
         temperature: 0.7,
         maxOutputTokens: 20000
     };
-    // Use the flag passed from the template
-    let isAuthenticated = !window.passwordRequired;
+    let isAuthenticated = !window.passwordRequired; // Use flag from HTML
+
+    // --- Configure Marked & Highlight.js ---
+    if (typeof marked !== 'undefined') {
+        // Configure marked options
+        marked.setOptions({
+            gfm: true, // Use GitHub Flavored Markdown
+            breaks: true, // Convert single line breaks to <br>
+            // Set up highlighting ONLY if highlight.js is available
+            highlight: (typeof hljs !== 'undefined') ? function(code, lang) {
+                const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+                try {
+                    return hljs.highlight(code, { language, ignoreIllegals: true }).value;
+                } catch (error) {
+                    console.error("Highlight.js error:", error);
+                    // Fallback to plaintext highlighting on error
+                    return hljs.highlight(code, { language: 'plaintext', ignoreIllegals: true }).value;
+                }
+            } : undefined // Set highlight to undefined if hljs is not loaded
+        });
+        if (typeof hljs === 'undefined') {
+             console.warn("highlight.js not loaded. Code block highlighting disabled.");
+        }
+    } else {
+        console.error("Error: marked.js not loaded!");
+    }
+
 
     // --- Initial Setup ---
     loadSettings(); // Load saved settings first
@@ -65,12 +90,12 @@ document.addEventListener('DOMContentLoaded', () => {
     addInitialGreeting(); // Add greeting message
     scrollToBottom();
 
-    // Show password modal immediately if required and not yet authenticated
+    // Show password modal if needed
     if (window.passwordRequired && !isAuthenticated) {
         if (passwordModalOverlay) passwordModalOverlay.classList.add('active');
         disableChatInput(true); // Disable main chat form
     } else {
-        // Ensure main UI is visible if no password needed or already authenticated (e.g., page refresh)
+        // Ensure main UI is visible if no password needed or already authenticated
         document.body.classList.remove('password-protected');
         disableChatInput(false);
     }
@@ -140,13 +165,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function handlePaste(event) {
         const items = event.clipboardData?.items;
         if (!items) return;
-        // console.log("Paste event detected."); // Optional log
-
         let imageFoundAndAdded = false;
         const MAX_FILES = 5;
-
         for (const item of items) {
-            // console.log(`Clipboard item: kind=${item.kind}, type=${item.type}`); // Optional log
             if (item.kind === 'file' && item.type.startsWith('image/')) {
                  if (attachedFiles.length >= MAX_FILES) {
                     alert(`File limit (${MAX_FILES}) reached. Pasted image not added.`);
@@ -154,42 +175,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 const file = item.getAsFile();
                 if (file) {
-                    // console.log("Pasted image file obtained:", file.name); // Optional log
-                    if (addFileToList(file)) { // Use helper
+                    if (addFileToList(file)) {
                          imageFoundAndAdded = true;
                     }
-                } else {
-                    console.error("Could not get file from clipboard item.");
-                }
+                } else { console.error("Could not get file from clipboard item."); }
             }
         }
-        if (imageFoundAndAdded) {
-            // console.log("Image successfully processed from paste, preventing default."); // Optional log
-            event.preventDefault(); // Prevent pasting image data as text
-        }
+        if (imageFoundAndAdded) { event.preventDefault(); }
     }
 
     // --- Common File Handling Logic ---
      function addFileToList(file) {
         if (!file) return false;
-        // console.log(`Attempting to add file: ${file.name}`); // Optional log
-        // Check if file already exists (by name and size)
         if (!attachedFiles.some(f => f.name === file.name && f.size === file.size)) {
             attachedFiles.push(file);
-            // console.log(`File added. Total files: ${attachedFiles.length}`); // Optional log
-            createFilePreview(file); // Create preview
-            updateSendButtonState(); // Update button state
-            return true; // Indicate success
+            createFilePreview(file);
+            updateSendButtonState();
+            return true;
         }
-        // console.log(`File "${file.name}" already attached or invalid.`); // Optional log
-        return false; // Indicate duplicate/failure
+        return false;
     }
 
 
     function createFilePreview(file) {
-        if (!filePreviewArea) return;
-        // console.log(`Creating preview for: ${file.name}`); // Optional log
-
+        if (!filePreviewArea) { console.error("Cannot create file preview: Preview area element not found."); return; }
         const previewElement = document.createElement('div');
         previewElement.className = 'file-preview bg-gray-200 dark:bg-gray-700 p-1 px-2 rounded-lg flex items-center space-x-2 text-xs';
         previewElement.dataset.fileName = file.name;
@@ -198,35 +207,27 @@ document.addEventListener('DOMContentLoaded', () => {
         else if (file.type === 'application/pdf') iconClass = 'fa-file-pdf';
         else if (file.type.startsWith('text/')) iconClass = 'fa-file-alt';
         else if (file.type.includes('python') || file.name.endsWith('.py')) iconClass = 'fa-file-code';
-        // Set innerHTML for the preview element
         previewElement.innerHTML = `
             <i class="fas ${iconClass} text-gray-600 dark:text-gray-400"></i>
             <span class="truncate max-w-[100px]">${file.name}</span>
-            <button type="button" class="remove-file-btn text-red-500 hover:text-red-700 ml-auto text-lg leading-none">&times;</button>
+            <button type="button" class="remove-file-btn text-red-500 hover:text-red-700 ml-auto text-lg leading-none" title="Remove file">&times;</button>
         `;
-
-        // Attach remove listener
         const removeBtn = previewElement.querySelector('.remove-file-btn');
         if (removeBtn) {
              removeBtn.addEventListener('click', () => {
                 removeFile(file.name);
                 previewElement.remove();
             });
-        } else {
-            console.error("Could not find remove button in preview element for", file.name);
-        }
-        // Append to preview area
+        } else { console.error("Could not find remove button in preview element for", file.name); }
         filePreviewArea.appendChild(previewElement);
     }
 
     function removeFile(fileName) {
-        // console.log(`Removing file: ${fileName}`); // Optional log
         attachedFiles = attachedFiles.filter(f => f.name !== fileName);
         updateSendButtonState();
     }
 
     function clearFilePreviews() {
-        // console.log("Clearing file previews and attachedFiles array."); // Optional log
         if (filePreviewArea) filePreviewArea.innerHTML = '';
         attachedFiles = [];
         if (fileInput) fileInput.value = '';
@@ -238,9 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const hasText = promptInput.value.trim().length > 0;
         const hasFiles = attachedFiles.length > 0;
         const isDisabled = !hasText && !hasFiles;
-        // console.log(`Updating button state: hasText=${hasText}, hasFiles=${hasFiles}, isDisabled=${isDisabled}`); // Optional log
         sendButton.disabled = isDisabled;
-        // Set button styling based on state
         if (isDisabled) {
             sendButton.classList.remove('bg-gemini-blue', 'text-white', 'hover:bg-blue-600', 'cursor-pointer', 'opacity-100');
             sendButton.classList.add('bg-gray-300', 'dark:bg-gray-500', 'text-gray-700', 'dark:text-gray-200', 'cursor-not-allowed', 'opacity-50');
@@ -253,61 +252,44 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Settings Modal Logic ---
     function openSettingsModal() {
-        // console.log("Attempting to open settings modal..."); // Optional log
         if (!settingsModalOverlay || !settingsModelInput || !settingsTempSlider || !settingsTempValueDisplay || !settingsMaxTokensInput) {
              console.error("Cannot open settings: Modal elements missing.");
              return;
         }
-        // Populate modal with current settings before showing
         settingsModelInput.value = currentSettings.modelName;
         settingsTempSlider.value = currentSettings.temperature;
         settingsTempValueDisplay.textContent = currentSettings.temperature.toFixed(1);
         settingsMaxTokensInput.value = currentSettings.maxOutputTokens;
         settingsModalOverlay.classList.add('active');
-        // console.log("Settings modal should be active."); // Optional log
     }
-
     function closeSettingsModal() {
-        if (!settingsModalOverlay) return;
-        settingsModalOverlay.classList.remove('active');
+        if (settingsModalOverlay) settingsModalOverlay.classList.remove('active');
     }
-
     function saveSettings() {
          if (!settingsModelInput || !settingsTempSlider || !settingsMaxTokensInput) {
              console.error("Cannot save settings: Modal input elements missing.");
              return;
          }
-         const newModelName = settingsModelInput.value.trim() || initialModelName; // Use initial default if empty
+         const newModelName = settingsModelInput.value.trim() || initialModelName;
          const newTemp = parseFloat(settingsTempSlider.value);
          const newMaxTokens = parseInt(settingsMaxTokensInput.value, 10);
-         // Validate max tokens
          const validatedMaxTokens = Math.max(2048, Math.min(newMaxTokens || 20000, 65536));
-
-         currentSettings = {
-             modelName: newModelName,
-             temperature: newTemp,
-             maxOutputTokens: validatedMaxTokens
-         };
-
+         currentSettings = { modelName: newModelName, temperature: newTemp, maxOutputTokens: validatedMaxTokens };
          localStorage.setItem('chatSettings', JSON.stringify(currentSettings));
-         updateSettingsDisplay(); // Update UI
+         updateSettingsDisplay();
          closeSettingsModal();
-         // console.log("Settings saved:", currentSettings); // Optional log
     }
-
     function loadSettings() {
          const savedSettings = localStorage.getItem('chatSettings');
          if (savedSettings) {
              try {
                  const parsedSettings = JSON.parse(savedSettings);
-                 // Validate loaded settings before applying
                  currentSettings.modelName = parsedSettings.modelName || initialModelName;
                  currentSettings.temperature = Math.max(0.0, Math.min(parseFloat(parsedSettings.temperature || 0.7), 2.0));
                  currentSettings.maxOutputTokens = Math.max(2048, Math.min(parseInt(parsedSettings.maxOutputTokens || 20000, 10), 65536));
-                 // console.log("Settings loaded:", currentSettings); // Optional log
              } catch (e) {
                  console.error("Error parsing saved settings:", e);
-                 // Fallback to defaults if parsing fails
+                 // Use defaults if parsing fails
                  currentSettings.modelName = initialModelName;
                  currentSettings.temperature = 0.7;
                  currentSettings.maxOutputTokens = 20000;
@@ -318,23 +300,20 @@ document.addEventListener('DOMContentLoaded', () => {
              currentSettings.temperature = 0.7;
              currentSettings.maxOutputTokens = 20000;
          }
-         // Ensure modal inputs exist before setting value
+         // Update modal inputs if they exist
          if(settingsModelInput) settingsModelInput.value = currentSettings.modelName;
          if(settingsTempSlider) settingsTempSlider.value = currentSettings.temperature;
          if(settingsTempValueDisplay) settingsTempValueDisplay.textContent = currentSettings.temperature.toFixed(1);
          if(settingsMaxTokensInput) settingsMaxTokensInput.value = currentSettings.maxOutputTokens;
          updateSettingsDisplay(); // Update header/footer display
     }
-
     function updateSettingsDisplay() {
         if(headerModelDisplay) headerModelDisplay.textContent = currentSettings.modelName;
         if(footerModelDisplay) footerModelDisplay.textContent = currentSettings.modelName;
         if(footerTempDisplay) footerTempDisplay.textContent = `(Temp: ${currentSettings.temperature.toFixed(1)})`;
     }
-
     // Settings Event Listeners
     if (settingsButton) { settingsButton.addEventListener('click', openSettingsModal); }
-    else { console.error("Settings button not found"); }
     if (settingsCloseButton) { settingsCloseButton.addEventListener('click', closeSettingsModal); }
     if (settingsModalOverlay) { settingsModalOverlay.addEventListener('click', (event) => { if (event.target === settingsModalOverlay) closeSettingsModal(); }); }
     if (settingsSaveButton) { settingsSaveButton.addEventListener('click', saveSettings); }
@@ -346,17 +325,11 @@ document.addEventListener('DOMContentLoaded', () => {
         passwordForm.addEventListener('submit', async (event) => {
             event.preventDefault();
             if (!passwordInput || !passwordSubmitButton || !passwordError) return;
-
             const enteredPassword = passwordInput.value;
-            if (!enteredPassword) {
-                passwordError.textContent = "Password cannot be empty.";
-                return;
-            }
-
+            if (!enteredPassword) { passwordError.textContent = "Password cannot be empty."; return; }
             passwordError.textContent = "";
             passwordSubmitButton.disabled = true;
             passwordSubmitButton.textContent = "Checking...";
-
             try {
                 const response = await fetch('/check_password', {
                     method: 'POST',
@@ -364,7 +337,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify({ password: enteredPassword })
                 });
                 const data = await response.json();
-
                 if (response.ok && data.authenticated) {
                     isAuthenticated = true;
                     if (passwordModalOverlay) passwordModalOverlay.classList.remove('active');
@@ -385,11 +357,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
-
-    // Function to disable/enable main chat input area
     function disableChatInput(disabled) {
         if (promptInput) promptInput.disabled = disabled;
-        if (sendButton) sendButton.disabled = disabled; // Also disable send button
+        if (sendButton) sendButton.disabled = disabled;
         if (fileInput) fileInput.disabled = disabled;
         const footer = document.getElementById('main-footer');
         if (footer) {
@@ -402,16 +372,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- New Chat Button ---
     if (newChatButton) {
         newChatButton.addEventListener('click', () => {
-            // console.log("New Chat button clicked"); // Optional log
-            if (chatContainer) chatContainer.innerHTML = ''; // Clear chat display
-            addInitialGreeting(); // Add back the greeting
-            clearFilePreviews(); // Clear attachments
-            if (promptInput) { // Clear text input
+            if (chatContainer) chatContainer.innerHTML = '';
+            addInitialGreeting();
+            clearFilePreviews();
+            if (promptInput) {
                 promptInput.value = '';
                 promptInput.style.height = 'auto';
             }
-            updateSendButtonState(); // Reset button state
-            // console.log("Chat cleared."); // Optional log
+            updateSendButtonState();
         });
     }
 
@@ -432,7 +400,6 @@ document.addEventListener('DOMContentLoaded', () => {
         chatContainer.appendChild(typingIndicatorElement);
         scrollToBottom();
     }
-
     function removeTypingIndicator() {
         if (typingIndicatorElement) {
             typingIndicatorElement.remove();
@@ -444,64 +411,48 @@ document.addEventListener('DOMContentLoaded', () => {
     if (chatForm) {
         chatForm.addEventListener('submit', async (event) => {
             event.preventDefault();
-            // Check authentication status before submitting
             if (!isAuthenticated && window.passwordRequired) {
                  console.log("Submit blocked: Not authenticated.");
-                 if (passwordModalOverlay && !passwordModalOverlay.classList.contains('active')) {
-                    passwordModalOverlay.classList.add('active'); // Show password modal again
-                 }
+                 if (passwordModalOverlay && !passwordModalOverlay.classList.contains('active')) { passwordModalOverlay.classList.add('active'); }
                  return;
             }
-
             if (!promptInput || !sendButton || sendButton.disabled) return;
             const promptText = promptInput.value.trim();
             if (!promptText && attachedFiles.length === 0) return;
 
-            // Display user message immediately
             displayMessage(promptText, attachedFiles, 'user');
 
-            // Prepare form data
             const formData = new FormData();
             formData.append('prompt', promptText);
-            // Use a copy of attachedFiles for the current request
-            const filesToSend = [...attachedFiles];
+            const filesToSend = [...attachedFiles]; // Use copy for request
             filesToSend.forEach(file => { formData.append('files', file, file.name); });
             formData.append('model_name', currentSettings.modelName);
             formData.append('temperature', currentSettings.temperature);
             formData.append('max_output_tokens', currentSettings.maxOutputTokens);
 
-            // Clear inputs after preparing data
             if(promptInput) { promptInput.value = ''; promptInput.style.height = 'auto'; }
-            clearFilePreviews(); // Clears global attachedFiles array
+            clearFilePreviews(); // Clears global attachedFiles
 
-            // Set UI states for loading
-            updateSendButtonState(); // Should now be disabled
+            updateSendButtonState();
             setLoading(true);
             showTypingIndicator();
 
-            // Fetch request
             try {
                 const response = await fetch('/chat', { method: 'POST', body: formData });
-
-                // Process response after fetch completes
                 removeTypingIndicator();
-                setLoading(false); // This calls updateSendButtonState
-
+                setLoading(false);
                 if (!response.ok) {
                     const errorData = await response.json().catch(() => ({ error: "Failed to parse error response." }));
                     console.error('Error response from server:', errorData);
                     displayMessage(`Error: ${errorData.error || response.statusText}`, [], 'error');
                     return;
                 }
-
                 const data = await response.json();
                 displayMessage(data.response, [], 'model', data.finish_reason, data.thinking_steps);
-
             } catch (fetchError) {
                 console.error('Fetch error:', fetchError);
-                // Reset UI on fetch error
                 removeTypingIndicator();
-                setLoading(false); // This calls updateSendButtonState
+                setLoading(false);
                 displayMessage(`Network error: ${fetchError.message}`, [], 'error');
             }
         });
@@ -511,8 +462,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Display Messages ---
     function addInitialGreeting() {
          if (!chatContainer) return;
-         // Only add if chat is empty
-         if (chatContainer.children.length === 0) {
+         if (chatContainer.children.length === 0 && isAuthenticated) {
               const greetingText = "Hello! How can I help you today?";
               const messageDiv = document.createElement('div');
               messageDiv.className = `flex justify-start mb-4`;
@@ -530,12 +480,12 @@ document.addEventListener('DOMContentLoaded', () => {
          const messageDiv = document.createElement('div');
          messageDiv.className = `flex ${role === 'user' ? 'justify-end' : 'justify-start'} mb-4`;
          const bubbleDiv = document.createElement('div');
-         bubbleDiv.className = `message-bubble max-w-xl lg:max-w-3xl p-3 rounded-lg shadow ${role === 'user' ? 'bg-user-bg-light dark:bg-user-bg-dark' : 'bg-model-bg-light dark:bg-model-bg-dark'}`;
+         bubbleDiv.className = `message-bubble max-w-xl lg:max-w-3xl p-3 rounded-lg shadow overflow-hidden ${role === 'user' ? 'bg-user-bg-light dark:bg-user-bg-dark' : 'bg-model-bg-light dark:bg-model-bg-dark'}`;
          let contentHTML = '';
 
          // Thinking/Tool Usage Details
          if (role === 'model' && thinkingSteps && thinkingSteps.length > 0) {
-             contentHTML += `<details class="mb-2 text-sm text-gray-600 dark:text-gray-400"> <summary class="font-medium hover:underline">Details</summary> <div class="bg-details-bg-light dark:bg-details-bg-dark p-2 rounded"> <ul>`; // Added padding
+             contentHTML += `<details class="mb-2 text-sm text-gray-600 dark:text-gray-400"> <summary class="font-medium hover:underline">Details</summary> <div class="bg-details-bg-light dark:bg-details-bg-dark p-2 rounded"> <ul>`;
              thinkingSteps.forEach(step => {
                  const escapedStep = step.replace(/</g, "&lt;").replace(/>/g, "&gt;");
                  const styledStep = escapedStep.replace(/^(Searching for:.*)/i, '<strong>$1</strong>');
@@ -558,23 +508,21 @@ document.addEventListener('DOMContentLoaded', () => {
              contentHTML += '</div>';
          }
 
-         // Main Text
+         // Main Text - Render Markdown
          if (text) {
              if (role === 'model' || role === 'error') {
-                 // Ensure marked and DOMPurify are loaded before using
                  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-                    const unsafeHTML = marked.parse(text);
+                    const unsafeHTML = marked.parse(text); // Use configured marked
                     const safeHTML = DOMPurify.sanitize(unsafeHTML);
                     contentHTML += `<div class="prose dark:prose-invert max-w-none">${safeHTML}</div>`;
                  } else {
-                     console.error("marked.js or DOMPurify not loaded");
-                     contentHTML += `<p class="whitespace-pre-wrap">${text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`; // Fallback to plain text
+                     contentHTML += `<p class="whitespace-pre-wrap">${text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`; // Fallback
                  }
-             } else {
+             } else { // User text
                   contentHTML += `<p class="whitespace-pre-wrap">${text}</p>`;
              }
          } else if (role === 'user' && files.length > 0 && !text) {
-              contentHTML += `<p class="italic text-sm text-gray-500 dark:text-gray-400">[Uploaded ${files.length} file(s)]</p>`;
+             contentHTML += `<p class="italic text-sm text-gray-500 dark:text-gray-400">[Uploaded ${files.length} file(s)]</p>`;
          }
 
          // Finish Reason
@@ -587,10 +535,128 @@ document.addEventListener('DOMContentLoaded', () => {
               bubbleDiv.classList.add('bg-red-100', 'dark:bg-red-900', 'text-red-700', 'dark:text-red-300');
          }
 
+         // Set bubble content *before* adding copy buttons or highlighting
          bubbleDiv.innerHTML = contentHTML;
          messageDiv.appendChild(bubbleDiv);
          chatContainer.appendChild(messageDiv);
+
+         // Apply Syntax Highlighting and Add Copy Buttons
+         if (role === 'model' || role === 'error') {
+            try {
+                // Ensure hljs is available before calling
+                if (typeof hljs !== 'undefined') {
+                    highlightCodeInElement(bubbleDiv);
+                } else {
+                    console.warn("highlight.js not loaded, skipping highlighting.");
+                }
+                addCopyButtonsToCodeBlocks(bubbleDiv); // Call improved function
+            } catch(e) {
+                console.error("Error applying highlighting or copy buttons:", e);
+            }
+         }
          scrollToBottom();
+    }
+
+    // --- Apply Syntax Highlighting ---
+    function highlightCodeInElement(containerElement) {
+        if (typeof hljs === 'undefined') { return; } // Guard clause
+        // Find code blocks that haven't been highlighted yet
+        const codeBlocks = containerElement.querySelectorAll('pre code:not(.hljs)');
+        codeBlocks.forEach((codeElement) => {
+            try {
+                 hljs.highlightElement(codeElement);
+            } catch (error) {
+                console.error("Error highlighting element:", error, codeElement);
+            }
+        });
+    }
+
+
+    // --- Add Copy Buttons ---
+    function addCopyButtonsToCodeBlocks(containerElement) {
+        const codeBlocks = containerElement.querySelectorAll('pre');
+        codeBlocks.forEach(preElement => {
+            // Check if already wrapped
+            if (preElement.parentNode.classList.contains('code-block-wrapper')) return;
+
+            const codeElement = preElement.querySelector('code');
+            if (!codeElement) return;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'code-block-wrapper'; // Class for relative positioning
+
+            const button = document.createElement('button');
+            const copyIconHtml = '<i class="far fa-copy mr-1"></i>'; // Store icon HTML
+            button.innerHTML = `${copyIconHtml}Copy`;
+            // Tailwind classes for styling
+            button.className = 'copy-code-button bg-gray-300 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-600';
+            button.style.fontFamily = 'inherit'; // Match surrounding font
+            button.setAttribute('title', 'Copy code'); // Add tooltip
+
+            button.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent potential parent listeners
+                const codeToCopy = codeElement.textContent || "";
+                // console.log("Copy button clicked. Attempting to copy:", codeToCopy.substring(0, 50) + "..."); // Optional log
+
+                // Check clipboard API availability *inside* the handler
+                if (!navigator.clipboard || !navigator.clipboard.writeText) {
+                    console.error("Clipboard API not available or not permitted.");
+                    button.innerHTML = '<i class="fas fa-times mr-1"></i> Error';
+                     button.classList.add('bg-red-500', 'text-white');
+                     button.classList.remove('bg-gray-300', 'dark:bg-gray-700', 'text-gray-800', 'dark:text-gray-200');
+                     button.disabled = true;
+                     setTimeout(() => { // Reset after timeout
+                         button.innerHTML = `${copyIconHtml}Copy`;
+                         button.classList.remove('bg-red-500', 'text-white');
+                         button.classList.add('bg-gray-300', 'dark:bg-gray-700', 'text-gray-800', 'dark:text-gray-200');
+                         button.disabled = false;
+                     }, 3000);
+                    return; // Stop execution
+                }
+
+                // Try to copy
+                navigator.clipboard.writeText(codeToCopy).then(() => {
+                    // console.log("Code copied successfully!"); // Optional log
+                    button.innerHTML = '<i class="fas fa-check mr-1"></i>Copied!'; // Checkmark icon
+                    // Success state styling
+                    button.classList.add('bg-green-500', 'dark:bg-green-600', 'text-white');
+                    button.classList.remove('bg-gray-300', 'dark:bg-gray-700', 'text-gray-800', 'dark:text-gray-200', 'hover:bg-gray-400', 'dark:hover:bg-gray-600');
+                    button.disabled = true;
+
+                    setTimeout(() => {
+                        button.innerHTML = `${copyIconHtml}Copy`; // Restore icon + text
+                        // Restore original styling
+                        button.classList.remove('bg-green-500', 'dark:bg-green-600', 'text-white');
+                        button.classList.add('bg-gray-300', 'dark:bg-gray-700', 'text-gray-800', 'dark:text-gray-200');
+                         button.disabled = false;
+                    }, 2000);
+                }).catch(err => {
+                    console.error('Failed to copy code via navigator.clipboard:', err); // Log specific error
+                    button.innerHTML = '<i class="fas fa-times mr-1"></i>Failed!'; // More specific error text
+                    // Error styling
+                    button.classList.add('bg-red-500', 'text-white');
+                    button.classList.remove('bg-gray-300', 'dark:bg-gray-700', 'text-gray-800', 'dark:text-gray-200');
+                    button.disabled = true; // Keep disabled on error? Maybe allow retry? Let's allow retry.
+
+                    setTimeout(() => {
+                         button.innerHTML = `${copyIconHtml}Copy`; // Restore icon + text
+                         button.classList.remove('bg-red-500', 'text-white');
+                         button.classList.add('bg-gray-300', 'dark:bg-gray-700', 'text-gray-800', 'dark:text-gray-200');
+                         button.disabled = false; // Re-enable button after error display
+                    }, 3000); // Longer timeout for error message
+                });
+            });
+
+            // Wrap the <pre> and add the button
+            // Check if preElement still has a parent before inserting (robustness)
+            if (preElement.parentNode) {
+                preElement.parentNode.insertBefore(wrapper, preElement);
+                wrapper.appendChild(preElement); // Move <pre> inside wrapper
+                wrapper.appendChild(button);    // Add button inside wrapper
+            } else {
+                console.warn("Could not wrap pre element, parentNode missing.");
+            }
+        });
     }
 
 
@@ -617,9 +683,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (promptInput) {
         promptInput.addEventListener('keydown', (event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
+                event.preventDefault(); // Prevent newline
+                // Trigger button click only if it's not disabled
                 if (sendButton && !sendButton.disabled) {
-                    sendButton.click();
+                    sendButton.click(); // Programmatically click the button
                 }
             }
         });

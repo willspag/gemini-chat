@@ -6,15 +6,17 @@
     <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/2.3.4/purify.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script>
-        // Tailwind dark mode configuration
+        // Tailwind config
         tailwind.config = {
-            darkMode: 'class', // or 'media'
+            darkMode: 'class',
             theme: {
                 extend: { // Fully implemented extend block
                     fontFamily: {
@@ -57,16 +59,29 @@
         /* Ensure html/body take full height */
         html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
 
-        /* Chat container height */
-        #chat-container { height: calc(100% - 0px); /* Let flexbox handle height */ } /* Adjusted for flex */
-        main { height: calc(100vh - 57px - 95px); /* vh - header height - footer height approx */ } /* Give main area a height */
+        /* Main content area height calculation */
+        main { height: calc(100vh - 57px - 95px); /* vh - approx header height - approx footer height */ }
 
-        /* Style for prose (markdown) */
+        /* Style for prose (markdown) - Base */
         .prose { color: inherit; }
         .prose :where(code):not(:where([class~="not-prose"] *))::before,
         .prose :where(code):not(:where([class~="not-prose"] *))::after { content: ""; }
-        .prose :where(pre):not(:where([class~="not-prose"] *)) { background-color: rgba(0, 0, 0, 0.1); color: inherit; border-radius: 0.5rem; padding: 0.8em 1em; overflow-x: auto; }
-        .dark .prose :where(pre):not(:where([class~="not-prose"] *)) { background-color: rgba(255, 255, 255, 0.1); }
+        /* Remove default prose background/padding for <pre> if using highlight.js theme */
+        .prose :where(pre):not(:where([class~="not-prose"] *)) {
+             background-color: transparent;
+             color: inherit;
+             padding: 0;
+             overflow-x: visible; /* Let hljs handle scroll if needed */
+             margin-top: 0; /* Remove prose margin */
+             margin-bottom: 0; /* Remove prose margin */
+        }
+         /* Ensure highlighted code block takes padding from highlight.js theme */
+        .prose pre code.hljs {
+            padding: 1em; /* Add padding back via hljs class */
+            border-radius: 0.5rem; /* Add rounded corners */
+            display: block;
+            overflow-x: auto;
+        }
         .dark .prose { color: #E8EAED; }
         .dark .prose :where(strong):not(:where([class~="not-prose"] *)) { color: #E8EAED; }
         .dark .prose :where(a):not(:where([class~="not-prose"] *)) { color: #8ab4f8; }
@@ -74,7 +89,7 @@
         .dark .prose :where(blockquote):not(:where([class~="not-prose"] *)) { border-left-color: #5f6368; color: #bdc1c6; }
 
         /* Loading indicator styles */
-        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #4285F4; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; margin-left: 10px; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #4285F4; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; }
         .dark .loader { border: 4px solid #5f6368; border-top: 4px solid #8ab4f8; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
@@ -89,7 +104,7 @@
         details > summary::-webkit-details-marker { display: none; }
         details > summary::before { content: '▶'; display: inline-block; font-size: 0.7em; margin-right: 0.4em; transition: transform 0.2s ease-in-out; }
         details[open] > summary::before { transform: rotate(90deg); }
-        details > div { margin-top: 0.5rem; padding: 0.5rem 0.75rem; border-radius: 0.375rem; /* rounded-md */ }
+        details > div { margin-top: 0.5rem; padding: 0.5rem 0.75rem; border-radius: 0.375rem; }
         details > div ul { list-style-type: disc; padding-left: 1.5rem; }
 
         /* Basic Modal Styles */
@@ -100,7 +115,6 @@
         }
         .modal-overlay.active { opacity: 1; visibility: visible; }
         .modal-content {
-            /* background handled by tailwind classes */
             padding: 1.5rem; border-radius: 0.5rem;
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
             max-width: 90%; width: 500px;
@@ -124,6 +138,24 @@
          .password-protected main, .password-protected footer#main-footer {
              display: none; /* Hide until authenticated */
          }
+
+         /* Code block wrapper for copy button */
+         .code-block-wrapper { position: relative; margin-top: 1em; margin-bottom: 1em; }
+         /* Copy button styles */
+         .copy-code-button {
+             position: absolute;
+             top: 0.5rem;
+             right: 0.5rem;
+             padding: 0.25rem 0.5rem;
+             border-radius: 0.375rem; /* rounded-md */
+             font-size: 0.75rem; /* text-xs */
+             cursor: pointer;
+             opacity: 0.3; /* Make less obtrusive initially */
+             transition: opacity 0.2s ease-in-out, background-color 0.2s ease-in-out, color 0.2s ease-in-out;
+             /* Theming via Tailwind classes in JS */
+         }
+         .code-block-wrapper:hover .copy-code-button { opacity: 1; } /* Show fully on hover */
+
     </style>
 </head>
 <body class="bg-white dark:bg-bg-dark text-text-light dark:text-text-dark font-sans flex flex-col h-screen {% if password_required %}password-protected{% endif %}">
@@ -147,14 +179,19 @@
     <main class="flex-1 flex flex-col overflow-hidden">
         <div id="chat-container" class="flex-1 overflow-y-auto p-4 space-y-4">
             {% if init_error %}
-             <div class="flex justify-start"> <div class="message-bubble max-w-xl lg:max-w-3xl p-3 rounded-lg bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 shadow"> <p class="font-bold">Initialization Error:</p> <pre class="whitespace-pre-wrap text-sm">{{ init_error }}</pre> </div> </div>
+             <div class="flex justify-start">
+                 <div class="message-bubble max-w-xl lg:max-w-3xl p-3 rounded-lg bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 shadow">
+                     <p class="font-bold">Initialization Error:</p>
+                     <pre class="whitespace-pre-wrap text-sm">{{ init_error }}</pre>
+                 </div>
+              </div>
             {% endif %}
              </div>
     </main>
 
     <footer id="main-footer" class="p-4 border-t border-border-light dark:border-border-dark bg-white dark:bg-bg-dark flex-shrink-0">
         <form id="chat-form" class="flex items-end space-x-3">
-            <label for="file-input" class="cursor-pointer p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors self-end mb-1">
+            <label for="file-input" class="cursor-pointer p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors self-end mb-1" title="Attach file">
                 <i class="fas fa-paperclip text-gray-600 dark:text-gray-400"></i>
                 <input id="file-input" type="file" multiple class="hidden">
             </label>
