@@ -1,4 +1,10 @@
-google-genai==1.10.0
-flask==3.1.0
+# Flask and dependencies
+Flask==3.1.0
 python-dotenv==1.1.0
 Werkzeug==3.1.3
+
+# Google Generative AI SDK
+google-genai==1.10.0
+
+# Production WSGI Server
+gunicorn==23.0.0
