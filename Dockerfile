@@ -4,9 +4,9 @@ FROM python:3.10-slim
 
 # Set environment variables
 # Prevents Python from buffering stdout and stderr
-ENV PYTHONUNBUFFERED True
+ENV PYTHONUNBUFFERED=True
 # Set the working directory in the container
-ENV APP_HOME /app
+ENV APP_HOME=/app
 WORKDIR $APP_HOME
 
 # Create a non-root user and group
