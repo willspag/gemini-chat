@@ -5,5 +5,5 @@ These are my drug candidates designed by my AI drug design software along with t
 
 
 
-docker build -t gemini-chat-image . && docker tag gemini-chat-image us-central1-docker.pkg.dev/lime-api-317218/gemini-chat-repo/gemini-chat-image:v7 && docker push us-central1-docker.pkg.dev/lime-api-317218/gemini-chat-repo/gemini-chat-image:v7
+docker build -t gemini-chat-image . && docker tag gemini-chat-image us-central1-docker.pkg.dev/lime-api-317218/gemini-chat-repo/gemini-chat-image:v8 && docker push us-central1-docker.pkg.dev/lime-api-317218/gemini-chat-repo/gemini-chat-image:v8
 
