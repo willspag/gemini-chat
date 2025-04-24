@@ -42,4 +42,5 @@ EXPOSE 8080
 # --workers: Adjust based on expected load and Cloud Run CPU allocation (2-4 is a common starting point)
 # --bind 0.0.0.0:8080: Listen on all interfaces on the specified port
 # app:app: Tells Gunicorn to run the 'app' object from the 'app.py' file
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "app:app"]
+# --timeout: Set a timeout for the application to run
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--timeout", "300", "app:app"]

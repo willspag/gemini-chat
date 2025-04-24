@@ -27,6 +27,18 @@ except ImportError:
     APScheduler_installed = False
     logging.warning("APScheduler not installed. Automatic session cleanup disabled.")
 
+import io
+import tempfile
+import csv # Added CSV
+try:
+    import pandas as pd
+    from rdkit import Chem
+    from rdkit.Chem import Draw
+    RDKIT_AVAILABLE = True
+except ImportError:
+    RDKIT_AVAILABLE = False
+    logging.warning("RDKit not installed. LIME Analysis feature will be unavailable.")
+
 
 # --- Load Environment Variables & Configuration ---
 load_dotenv()
@@ -56,7 +68,7 @@ except (ValueError, TypeError): print(f"Warning: Invalid MAX_OUTPUT_TOKENS. Usin
 
 UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "uploads")
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt', 'md', 'py', 'js', 'html', 'css', 'csv'}
-MAX_CONTENT_LENGTH = 16 * 1024 * 1024
+MAX_CONTENT_LENGTH = 32 * 1024 * 1024 # Increased for potentially larger CSVs
 
 CHAT_PASSWORD = os.getenv("CHAT_PASSWORD")
 GCLOUD_BUCKET_NAME = os.getenv("GCLOUD_BUCKET_NAME")
@@ -87,10 +99,21 @@ def clear_directory(dir_path):
     logging.info(f"Finished clearing directory: {dir_path}")
 
 def get_part_token_count(model_to_use, part):
-    response = genai_client.models.count_tokens(model=model_to_use, contents=part)
-    token_count = response.total_tokens
-    logging.debug(f"\n\n\n[Count Tokens Debug] Token count is {token_count} for part: {part}")
-    return token_count
+    # Add a try-except block for robustness
+    try:
+        response = genai_client.models.count_tokens(model=model_to_use, contents=part)
+        token_count = response.total_tokens
+        # Use sanitized repr in debug log
+        if app.debug:
+            logging.debug(f"[Count Tokens Debug] Token count is {token_count} for part: {_get_sanitized_part_repr(part)}")
+        return token_count
+    except Exception as e:
+        logging.error(f"Error counting tokens for part ({_get_sanitized_part_repr(part)}): {e}")
+        # Decide how to handle the error: return 0, raise, etc.
+        # Returning 0 might silently underestimate token count.
+        # For now, let's re-raise or return a sentinel value if the calling function can handle it.
+        # Re-raising seems appropriate here as it indicates a failure in a core step.
+        raise RuntimeError(f"Failed to count tokens for a part: {e}") from e
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -690,24 +713,27 @@ def count_tokens_endpoint():
         all_parts = []
         if session_id and session_id in CHAT_HISTORIES:
             raw_history = CHAT_HISTORIES[session_id]
-            logging.debug(f"[Count Tokens Debug] Raw History Retrieved ({len(raw_history)} items):")
-            for i, content_item in enumerate(raw_history):
-                logging.debug(f"  History Item {i}: Type={type(content_item)}, Content={content_item!r}")
+            contents_to_count.extend(raw_history) # Add existing history Content objects
+            # Conditional logging for raw history
+            if app.debug:
+                logging.debug(f"[Count Tokens Debug] Raw History Retrieved ({len(raw_history)} items):")
+                for i, content_item in enumerate(raw_history):
+                    # Represent content items safely (they contain Parts)
+                    content_repr = f"Content(role='{content_item.role}', parts=[{', '.join(_get_sanitized_part_repr(p) for p in content_item.parts)}])"
+                    logging.debug(f"  History Item {i}: Type={type(content_item)}, Sanitized Content={content_repr}")
+            # Extract parts regardless of debug mode
             for content in CHAT_HISTORIES[session_id]:
-                logging.debug(f"  Processing history Content object: {content!r}")
                 all_parts.extend(content.parts)
-                contents_to_count.append(content)
-            logging.debug(f"[Count Tokens Debug] all_parts after processing history ({len(all_parts)} items):")
-            for i, part_item in enumerate(all_parts):
-                logging.debug(f"  Part {i}: Type={type(part_item)}, Content={part_item!r}")
-
-        logging.debug(f"[Count Tokens Debug] all_parts after processing history ({len(all_parts)} items):")
-        for i, part_item in enumerate(all_parts):
-            logging.debug(f"  Part {i}: Type={type(part_item)}, Content={part_item!r}")
-
-        # 2. Process pending text and files
+            # Conditional logging for extracted parts
+            if app.debug:
+                logging.debug(f"[Count Tokens Debug] all_parts after processing history ({len(all_parts)} items):")
+                for i, part_item in enumerate(all_parts):
+                    logging.debug(f"  Part {i}: {_get_sanitized_part_repr(part_item)}")
+        # Process pending text and files
+        pending_parts = [] # Collect pending parts here
         if pending_text:
-            all_parts.append(types.Part(text=pending_text))
+            # all_parts.append(types.Part(text=pending_text))
+            pending_parts.append(types.Part(text=pending_text))
 
         if pending_files:
             os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -719,102 +745,120 @@ def count_tokens_endpoint():
                     try:
                         file.save(local_filepath)
                         mime_type = mimetypes.guess_type(local_filepath)[0] or 'application/octet-stream'
-                        gcs_blob_name = f"temp_token_count/{session_id or 'no_session'}/{uuid.uuid4()}_{temp_local_filename}"
-                        gcs_temp_blobs_to_clean.append(gcs_blob_name)
-                        gcs_uri = upload_to_gcs(local_filepath, gcs_blob_name)
-                        file_part = types.Part.from_uri(file_uri=gcs_uri, mime_type=mime_type)
-                        all_parts.append(file_part)
-                        logging.debug(f"[Count Tokens Debug] Appended pending File: {file_part!r}")
-                    except Exception as upload_err:
-                        logging.error(f"Error processing file {file.filename} for token count: {upload_err}")
-                        continue
+                        # For token counting, we *don't* need GCS upload anymore if using Part.from_bytes locally
+                        # Let's switch to reading bytes for counting as well, similar to LIME processing
+                        with open(local_filepath, "rb") as f:
+                            file_bytes = f.read()
+                        # Create part using bytes
+                        file_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+                        # all_parts.append(file_part)
+                        pending_parts.append(file_part)
+                        if app.debug:
+                             logging.debug(f"[Count Tokens Debug] Appended pending File (as bytes): {_get_sanitized_part_repr(file_part)}")
+                    except Exception as proc_err:
+                        # Changed variable name from upload_err to proc_err
+                        logging.error(f"Error processing file {file.filename} for token count: {proc_err}")
+                        # Ensure local file is still cleaned up if save worked but bytes reading failed
+                        continue # Skip appending this file
                 elif file:
                     logging.warning(f"Skipping disallowed file type for token count: {file.filename}")
 
-        logging.debug(f"[Count Tokens Debug] all_parts after adding pending text/files ({len(all_parts)} items):")
-        for i, part_item in enumerate(all_parts):
-            logging.debug(f"  Part {i}: Type={type(part_item)}, Content={part_item!r}")
+        # Conditional Logging for final list of parts is less relevant now, log contents_to_count instead
+        if app.debug:
+            # Create a sanitized representation of contents_to_count
+            logging.debug(f"[Count Tokens Debug] Assembled contents_to_count ({len(contents_to_count)} items) before adding pending:")
+            for i, content_item in enumerate(contents_to_count):
+                content_repr = f"Content(role='{content_item.role}', parts=[{', '.join(_get_sanitized_part_repr(p) for p in content_item.parts)}])"
+                logging.debug(f"  Content {i}: {content_repr}")
 
         # 3. Create a Content object with all parts for token counting
-        if len(all_parts) == 0:
+        # We should count parts individually now, not contents <-- Revert this idea
+        # Create a new Content object for pending parts and add it
+        if pending_parts:
+            pending_content = types.Content(role="user", parts=pending_parts)
+            contents_to_count.append(pending_content)
+            if app.debug:
+                 content_repr = f"Content(role='{pending_content.role}', parts=[{', '.join(_get_sanitized_part_repr(p) for p in pending_content.parts)}])"
+                 logging.debug(f"[Count Tokens Debug] Added pending_content: {content_repr}")
+
+        # If nothing to count (no history, no pending), return 0
+        if not contents_to_count:
             return jsonify({"total_tokens": 0})
-        else:
-            contents_to_count.append(types.Content(parts=all_parts))
 
         # 5. Determine model to use
         model_to_use = DEFAULT_MODEL_NAME
         fallback_model = "gemini-2.0-flash-001" # Reverted fallback to 1.5 flash
 
-        # 6. Call count_tokens API (genai_client.models.compute_tokens)
+        # 6. Call count_tokens API for each part <-- REVERT: Call ONCE with all contents
+        total_token_count = 0
         try:
-            logging.debug(f"[Count Tokens Debug] Final all_parts ({len(all_parts)} items) being sent to API:")
-           
-            for i, item in enumerate(all_parts):
-                try: logging.debug(f"  Item {i}: Type={type(item)}, Content={item!r}")
-                except Exception as repr_err: logging.debug(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
-            logging.debug(f"\n\n\n[Count Tokens Debug] Final contents_to_count ({len(contents_to_count)} items) being sent to API:")
-            for i, item in enumerate(contents_to_count):
-                try: logging.debug(f"\n\n\n  Item {i}: Type={type(item)}, Content={item!r}")
-                except Exception as repr_err: logging.debug(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
-            #response = genai_client.models.count_tokens(model=model_to_use, contents=contents_to_count)
-            total_token_count = 0
-            for part in all_parts:
-                logging.debug(f"\n\n\n[Count Tokens Debug] Counting tokens for part: {part!r}")
-                token_count = get_part_token_count(model_to_use=model_to_use, part=part)
-                total_token_count += token_count
-                logging.debug(f"[Count Tokens Debug] Successfully counted {token_count} tokens for part: {part!r}")
-                logging.info(f"[count_tokens] Current total token count: {total_token_count}\n\n\n")
+            # Log the final contents being sent (conditionally)
+            if app.debug:
+                logging.debug(f"[Count Tokens Debug] Calling count_tokens API with {len(contents_to_count)} Content objects.")
+                # Log first few contents for inspection
+                for i, content_item in enumerate(contents_to_count[:3]): # Log first 3
+                    content_repr = f"Content(role='{content_item.role}', parts=[{', '.join(_get_sanitized_part_repr(p) for p in content_item.parts)}])"
+                    logging.debug(f"  Content {i} (to API): {content_repr}")
+                if len(contents_to_count) > 3:
+                    logging.debug("  ... (further contents omitted from log)")
+
+            # Call the API ONCE with the list of Content objects
+            response = genai_client.models.count_tokens(model=model_to_use, contents=contents_to_count)
+            total_token_count = response.total_tokens
+
+            # Log success
+            logging.info(f"[count_tokens] Total token count (primary model): {total_token_count}")
             return jsonify({"total_tokens": total_token_count})
+
         except Exception as e_primary:
-            logging.warning(f"Token count failed for model '{model_to_use}': {e_primary}. Trying fallback '{fallback_model}'.")
-            # --- Enhanced Error Logging --- Start
-            logging.error(f"Exception Type (Primary): {type(e_primary)}")
-            logging.error(f"Exception Args (Primary): {e_primary.args}")
-            logging.error(f"Traceback (Primary):\n{traceback.format_exc()}")
-            logging.error(f"[Count Tokens Debug] Failed with all_parts ({len(all_parts)} items):")
-            
-            for i, item in enumerate(all_parts):
-                 try: logging.error(f"  Item {i}: Type={type(item)}, Content={item!r}")
-                 except Exception as repr_err: logging.error(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
-            
-            logging.error(f"\n\n\n[Count Tokens Debug] Failed with contents_to_count ({len(contents_to_count)} items):")
-            for i, item in enumerate(contents_to_count):
-                 try: logging.error(f"  Item {i}: Type={type(item)}, Content={item!r}")
-                 except Exception as repr_err: logging.error(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
-            # --- Enhanced Error Logging --- End
+            logging.warning(f"Token count failed for primary model '{model_to_use}' with combined content: {e_primary}. Trying fallback '{fallback_model}'.")
+            # Log details only in debug mode
+            if app.debug:
+                logging.warning(f"Exception Type (Primary): {type(e_primary)}")
+                logging.warning(f"Exception Args (Primary): {e_primary.args}")
+                # Log the contents that caused the error (sanitized)
+                logging.warning(f"[Count Tokens Debug] Failing contents ({len(contents_to_count)} items):")
+                for i, content_item in enumerate(contents_to_count[:5]): # Log first 5 failing contents
+                    content_repr = f"Content(role='{content_item.role}', parts=[{', '.join(_get_sanitized_part_repr(p) for p in content_item.parts)}])"
+                    logging.warning(f"  Content {i}: {content_repr}")
+                if len(contents_to_count) > 5:
+                    logging.warning("  ... (further failing contents omitted from log)")
+
             try:
-                #response = genai_client.models.count_tokens(model=fallback_model, contents=contents_to_count)
-                # Get the total token count from the response
-                #token_count = response.total_tokens
-                token_count = 0
-                for part in all_parts:
-                    token_count += get_part_token_count(model_to_use=fallback_model, part=part)
-                logging.info(f"[count_tokens] Total token count: {token_count}")
-                return jsonify({"total_tokens": token_count})
+                # Try the fallback model ONCE with the same combined content
+                response = genai_client.models.count_tokens(model=fallback_model, contents=contents_to_count)
+                total_token_count = response.total_tokens
+                logging.info(f"[count_tokens] Total token count (fallback model): {total_token_count}")
+                return jsonify({"total_tokens": total_token_count})
             except Exception as e_fallback:
-                logging.error(f"Token count failed for fallback model '{fallback_model}': {e_fallback}")
-                # --- Enhanced Error Logging --- Start
-                logging.error(f"Exception Type (Fallback): {type(e_fallback)}")
-                logging.error(f"Exception Args (Fallback): {e_fallback.args}")
-                logging.error(f"Traceback (Fallback):\n{traceback.format_exc()}")
-                logging.error(f"[Count Tokens Debug] Failed with all_parts ({len(all_parts)} items):")
-                
-                for i, item in enumerate(all_parts):
-                    try: logging.error(f"  Item {i}: Type={type(item)}, Content={item!r}")
-                    except Exception as repr_err: logging.error(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
-                logging.error(f"\n\n\n[Count Tokens Debug] Failed with contents_to_count ({len(contents_to_count)} items):")
-                for i, item in enumerate(contents_to_count):
-                    try: logging.error(f"\n\n\n  Item {i}: Type={type(item)}, Content={item!r}")
-                    except Exception as repr_err: logging.error(f"  Item {i}: Type={type(item)}, Error getting repr: {repr_err}")
-                # --- Enhanced Error Logging --- End
-                return jsonify({"error": "Token counting failed for primary and fallback models."}), 500
- 
+                logging.error(f"Token count failed for fallback model '{fallback_model}' with combined content: {e_fallback}")
+                 # Log details only in debug mode
+                if app.debug:
+                    logging.error(f"Exception Type (Fallback): {type(e_fallback)}")
+                    logging.error(f"Exception Args (Fallback): {e_fallback.args}")
+                    # Log the contents again for fallback failure
+                    logging.error(f"[Count Tokens Debug] Failing contents (fallback) ({len(contents_to_count)} items):")
+                    for i, content_item in enumerate(contents_to_count[:5]):
+                        content_repr = f"Content(role='{content_item.role}', parts=[{', '.join(_get_sanitized_part_repr(p) for p in content_item.parts)}])"
+                        logging.error(f"  Content {i}: {content_repr}")
+                    if len(contents_to_count) > 5:
+                        logging.error("  ... (further failing contents omitted from log)")
+                return jsonify({"error": "Token counting failed for primary and fallback models. See server logs."}), 500
+
+        # This outer exception catch might be redundant now but can stay as a safeguard
+        except Exception as e_outer:
+            logging.error(f"Unexpected outer error during token counting: {e_outer}")
+            return jsonify({"error": "An unexpected error occurred during token counting."}), 500
+
     finally:
         # --- Cleanup Temporary Files ---
         for local_path in local_temp_files_to_clean:
             if os.path.exists(local_path):
-                try: os.remove(local_path)
-                except OSError as e: logging.error(f"Error deleting local temp file {local_path}: {e}")
+                try:
+                    os.remove(local_path)
+                    logging.info(f"Cleaned up temporary file: {local_path}")
+                except Exception as e_clean:
+                    logging.error(f"Error cleaning up temporary file {local_path}: {e_clean}")
 
         if gcs_temp_blobs_to_clean and storage_client and GCLOUD_BUCKET_NAME:
             try:
@@ -847,6 +891,292 @@ if APScheduler_installed:
 else:
     scheduler = None
 
+
+# --- New LIME Processing Route ---
+@app.route('/process_lime', methods=['POST'])
+def process_lime_endpoint():
+    """Handles LIME CSV upload, processing, and new chat initialization."""
+    if not RDKIT_AVAILABLE:
+        logging.error("Attempted LIME analysis, but RDKit is not available.")
+        return jsonify({"error": "RDKit not installed on server. LIME Analysis unavailable."}), 501 # Not Implemented
+
+    if CHAT_PASSWORD and not session.get('is_authenticated'):
+        return jsonify({"error": "Not authenticated"}), 401
+    if not genai_client or not storage_client:
+        return jsonify({"error": "Backend client not initialized."}), 500
+
+    uploaded_file = request.files.get('lime_csv')
+    if not uploaded_file:
+        return jsonify({"error": "No LIME CSV file provided."}), 400
+    # Use allowed_file helper
+    if not allowed_file(uploaded_file.filename) or not uploaded_file.filename.lower().endswith('.csv'):
+        return jsonify({"error": "Invalid file type. Please upload a CSV file."}), 400
+
+    temp_dir = None
+    gcs_blobs_to_clean = [] # Keep track for cleanup on error too
+
+    try:
+        # --- Create Temporary Directories ---
+        temp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
+        temp_img_subdir = os.path.join(temp_dir, 'images')
+        # No need to make img subdir, process_lime_csv will do it
+
+        # Save uploaded CSV temporarily
+        # Use secure_filename for the temp file name as well
+        temp_filename = secure_filename(f"input_{uuid.uuid4()}.csv")
+        temp_csv_path = os.path.join(temp_dir, temp_filename)
+        uploaded_file.save(temp_csv_path)
+        logging.info(f"Saved uploaded LIME CSV to temporary path: {temp_csv_path}")
+
+        # --- Process CSV and Generate Images ---
+        # This function now raises errors which will be caught below
+        df_processed = process_lime_csv(temp_csv_path, temp_img_subdir, logging)
+
+        # --- Prepare Context List & Upload Images to GCS ---
+        lime_parts = []
+        # Use a unique ID for GCS path, distinct from session ID for clarity
+        lime_upload_id = str(uuid.uuid4()) # Still useful for potential logging/debugging
+        id_col_final = "ID" # Final name from process_lime_csv
+
+        logging.info("Starting image reading and context preparation...")
+        # Check for tqdm before using it
+        try: from tqdm.auto import tqdm
+        except ImportError: tqdm = lambda x, **kwargs: x
+
+        upload_success_count = 0
+        for index, row in tqdm(df_processed.iterrows(), total=df_processed.shape[0], desc="Processing molecules"):
+            # 1. Row Data as JSON (excluding local path and SMILES)
+            row_data = row.drop(['local_image_path', 'SMILES'], errors='ignore').to_dict()
+            row_json_string = json.dumps(row_data, separators=(',', ':'))
+            lime_parts.append(types.Part(text=row_json_string))
+
+            # 2. Image Part (if available) - Read bytes directly
+            local_img_path = row.get('local_image_path')
+            if pd.notna(local_img_path) and os.path.exists(local_img_path):
+                try:
+                    # Read image bytes from local temp file
+                    with open(local_img_path, "rb") as f:
+                        image_bytes = f.read()
+                    mime_type = mimetypes.guess_type(local_img_path)[0] or 'image/png'
+                    # Use Part.from_bytes instead of uploading to GCS
+                    lime_parts.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
+                    # No need to track gcs_blobs_to_clean for images anymore
+                    # No need to call upload_to_gcs
+                except Exception as read_err:
+                    logging.error(f"Failed to read local image file {local_img_path}: {read_err}")
+                    lime_parts.append(types.Part(text=f"[Error reading image for molecule ID: {row.get(id_col_final, 'Unknown')}]"))
+            # Don't append text if image wasn't generated or path was bad, reduces noise
+
+        if not lime_parts:
+             raise ValueError("No context parts generated from LIME CSV (check logs for processing errors).")
+        logging.info(f"Generated {len(lime_parts)} parts for LIME context by reading local images.")
+
+        # --- Create New Chat Session ---
+        # Generate a new session ID specifically for this LIME-initiated chat
+        new_session_id = str(uuid.uuid4())
+        logging.info(f"Creating new chat session for LIME analysis: {new_session_id}")
+
+        # Get current settings from Flask session (saved by JS on settings change/page load)
+        # Use defaults if not found in session
+        model_to_use = session.get('current_model', DEFAULT_MODEL_NAME)
+        temperature_to_use = session.get('current_temp', 0.7)
+        max_tokens_to_use = session.get('current_max_tokens', DEFAULT_MAX_TOKENS)
+
+        # Define history as a single user turn with all parts
+        initial_history = [Content(role="user", parts=lime_parts)]
+
+        # Log a snippet of the history for debugging
+        # Be careful not to log too much potentially sensitive data
+        try:
+            history_snippet = [str(p)[:100] + '...' if isinstance(p.text, str) and len(p.text)>100 else str(p) for p in initial_history[0].parts[:5]]
+            logging.debug(f"Creating chat with history snippet: {history_snippet}")
+        except Exception as log_e:
+            logging.warning(f"Could not create history snippet for logging: {log_e}")
+
+        chat_session = genai_client.chats.create(
+            model=model_to_use,
+            config=types.GenerateContentConfig(
+                tools=[code_execution_tool], # ONLY Code Execution tool
+                temperature=temperature_to_use,
+                max_output_tokens=max_tokens_to_use
+            ),
+            history=initial_history,
+        )
+        # Store the new session
+        CHAT_SESSIONS[new_session_id] = chat_session
+        CHAT_HISTORIES[new_session_id] = initial_history
+        SESSION_TIMESTAMPS[new_session_id] = datetime.now(timezone.utc)
+
+        # IMPORTANT: Update the Flask session to use this new chat ID
+        session['chat_session_id'] = new_session_id
+        # Also update the stored settings in the session to reflect the new chat
+        session['current_model'] = model_to_use
+        session['current_temp'] = temperature_to_use
+        session['current_max_tokens'] = max_tokens_to_use
+        session['current_tool'] = 'code' # Reflect that code tool is active
+
+        logging.info(f"Successfully created and stored new LIME chat session {new_session_id}")
+        # Return success AFTER session is created and stored
+        return jsonify({"success": True, "message": "LIME analysis processed and loaded into new chat session."})
+
+    except (FileNotFoundError, ValueError, RuntimeError, ConnectionError) as e:
+        # Handle errors from processing, GCS, or session creation
+        error_message = str(e)
+        logging.error(f"Error during LIME processing workflow: {error_message}")
+        # Attempt GCS cleanup even on error - REMOVED image blob cleanup
+        # if gcs_blobs_to_clean and storage_client:
+        #     logging.info(f"Attempting to clean up {len(gcs_blobs_to_clean)} GCS blobs due to error...")
+        #     try:
+        #                  logging.error(f"Error accessing GCS bucket '{GCLOUD_BUCKET_NAME}' for error cleanup: {e_bucket}")
+        # Return specific error code based on type?
+        status_code = 400 if isinstance(e, (FileNotFoundError, ValueError)) else 500
+        return jsonify({"error": error_message}), status_code
+    except Exception as e:
+        # Catch any other unexpected errors
+        logging.error(f"Unexpected error in /process_lime endpoint: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": "An unexpected server error occurred during LIME processing."}), 500
+    finally:
+        # --- Local Cleanup ---
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                logging.info(f"Cleaned up temporary directory: {temp_dir}")
+            except Exception as e_clean:
+                logging.error(f"Error cleaning up temporary directory {temp_dir}: {e_clean}")
+
+# --- Helper function to run rdkit processing (adapting from preprocess_df.py) ---
+# Defined outside the route for clarity
+def process_lime_csv(input_csv_path, temp_image_dir, logger):
+    """Processes the uploaded LIME CSV, generates images, and returns a processed DataFrame."""
+    if not RDKIT_AVAILABLE:
+        raise RuntimeError("RDKit library is not installed, cannot perform LIME analysis.")
+    try:
+        # Define simplified list of columns to keep for context
+        # We need original names to select, then rename
+        column_name_map_from_original = {
+            "drug_candidate_id": "ID", # Keep for ID
+            "cannonical_smiles": "SMILES", # Keep for image generation
+            "rdkit_synthetic_accessibility_score": "SAScore",
+            "rdkit_molecular_weight": "MolWt",
+            "rdkit_logp": "LogP",
+            "rdkit_lipinski_ro5_violations": "LipinskiViolations",
+            "Passed PAINS Filter": "PAINSFilter",
+            "Passed BRENK Filter": "BRENKFilter",
+            "AutoDockVina Minimum Best Pose Binding Energy": "MinBindingEnergy",
+            "Predicted Probability of Synthetic Success": "SynthSuccessProb",
+            "Retrosynthesis Was Solved": "RetroSolved",
+        }
+
+        logger.info(f"Reading LIME CSV from: {input_csv_path}")
+        df = pd.read_csv(input_csv_path)
+        logger.info(f"Loaded {len(df)} rows from CSV.")
+
+        # Check which original columns (needed for selection) exist
+        original_cols_to_select = list(column_name_map_from_original.keys())
+        existing_original_columns = [col for col in original_cols_to_select if col in df.columns]
+        missing_original = set(original_cols_to_select) - set(existing_original_columns)
+        if missing_original:
+            logger.warning(f"LIME CSV Warning: Missing some expected original columns used for context: {missing_original}")
+        if not existing_original_columns:
+             raise ValueError("CSV contains none of the expected columns for LIME analysis.")
+        if "drug_candidate_id" not in existing_original_columns or "cannonical_smiles" not in existing_original_columns:
+             raise ValueError("CSV must contain at least 'drug_candidate_id' and 'cannonical_smiles' columns.")
+
+        # Select the columns that exist using their original names
+        df_filtered = df[existing_original_columns].copy()
+        # Rename selected columns to the desired shorter context names
+        df_filtered.rename(columns=column_name_map_from_original, inplace=True)
+
+        # --- Rounding ---
+        probability_col_final = "SynthSuccessProb" # Name after rename
+        for col in df_filtered.columns:
+            # Check if numeric and contains floats (avoid rounding ints)
+            if pd.api.types.is_numeric_dtype(df_filtered[col]) and df_filtered[col].dropna().apply(lambda x: isinstance(x, float)).any():
+                round_digits = 3 if col == probability_col_final else 1
+                df_filtered[col] = df_filtered[col].apply(lambda x: round(x, round_digits) if pd.notna(x) else x)
+        logger.info("Selected columns renamed and rounded.")
+
+        # --- Generate Images ---
+        image_paths = []
+        os.makedirs(temp_image_dir, exist_ok=True)
+        logger.info(f"Generating images in temporary directory: {temp_image_dir}")
+
+        # Check for tqdm before using it
+        try: from tqdm.auto import tqdm
+        except ImportError: tqdm = lambda x, **kwargs: x # No-op if tqdm not installed
+
+        processed_count = 0
+        # Use the FINAL renamed column names here
+        smiles_col_final = "SMILES"
+        id_col_final = "ID"
+
+        for index, row in tqdm(df_filtered.iterrows(), total=df_filtered.shape[0], desc="Processing molecules"):
+            smiles = row.get(smiles_col_final)
+            mol_id = row.get(id_col_final)
+            img_path = None
+
+            if pd.notna(smiles) and pd.notna(mol_id):
+                try:
+                    mol = Chem.MolFromSmiles(str(smiles))
+                    if mol:
+                        img = Draw.MolToImage(mol, size=(300, 300))
+                        # Sanitize mol_id for filename
+                        safe_mol_id = str(mol_id).replace(os.path.sep, '_').replace('/', '_')
+                        img_filename = f"{safe_mol_id}.png"
+                        img_path = os.path.join(temp_image_dir, img_filename)
+                        img.save(img_path)
+                        processed_count += 1
+                    else:
+                        logger.warning(f"Could not parse SMILES for ID {mol_id}: {smiles}")
+                except Exception as img_e:
+                    # Log RDKit specific errors if possible
+                    logger.warning(f"RDKit error generating image for ID {mol_id} (SMILES: {smiles}): {img_e}")
+                    img_path = None # Ensure path is None on error
+            # else: IDs or SMILES are missing, already logged if needed
+
+            image_paths.append(img_path)
+
+        df_filtered['local_image_path'] = image_paths # Store the *local* path for GCS upload
+        logger.info(f"Finished generating images. Successfully processed: {processed_count}/{len(df_filtered)}")
+
+        return df_filtered
+
+    except ImportError as ie:
+        logger.error(f"Import error during LIME processing: {ie}. Ensure pandas and rdkit-pypi are installed.")
+        raise RuntimeError(f"Missing dependency for LIME processing: {ie}") from ie
+    except FileNotFoundError:
+        logger.error(f"LIME input CSV not found at {input_csv_path}")
+        raise FileNotFoundError("Input CSV file not found.")
+    except ValueError as ve:
+        logger.error(f"Data validation error in LIME CSV: {ve}")
+        raise ValueError(f"Invalid LIME CSV data: {ve}") from ve
+    except KeyError as ke:
+        logger.error(f"Missing required column during LIME processing: {ke}")
+        raise ValueError(f"CSV missing required column: {ke}") from ke
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during LIME CSV processing: {e}\n{traceback.format_exc()}")
+        raise RuntimeError(f"Failed to process LIME CSV: {e}") from e
+
+# --- Sanitized Logging Helper ---
+def _get_sanitized_part_repr(part):
+    """Returns a string representation of a Part, sanitizing large data fields."""
+    if hasattr(part, 'inline_data') and part.inline_data and hasattr(part.inline_data, 'data') and isinstance(part.inline_data.data, bytes):
+        mime_type = getattr(part.inline_data, 'mime_type', 'unknown')
+        data_len = len(part.inline_data.data)
+        return f"Part(inline_data=InlineData(mime_type='{mime_type}', data=<bytes len={data_len}>))"
+    elif hasattr(part, 'text'):
+        # Truncate long text for logs
+        text_repr = repr(part.text)
+        if len(text_repr) > 150:
+            text_repr = text_repr[:147] + '...'
+        return f"Part(text={text_repr})"
+    # Add more elif conditions here for other Part types if needed (e.g., function calls)
+    else:
+        # Fallback to default repr for unknown or simple types
+        try:
+            return repr(part)
+        except Exception:
+            return f"<Error getting repr for part type {type(part)}>"
 
 # --- Main Execution ---
 if __name__ == '__main__':

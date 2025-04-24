@@ -29,6 +29,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const passwordInput = document.getElementById('password-input');
     const passwordSubmitButton = document.getElementById('password-submit-button');
     const passwordError = document.getElementById('password-error');
+    const limeAnalysisButton = document.getElementById('lime-analysis-button'); // Added LIME button
+    const limeCsvInput = document.getElementById('lime-csv-input'); // Added LIME input
 
     // Check if essential elements were found
     const essentialElements = {
@@ -37,7 +39,8 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsTempSlider, settingsTempValueDisplay, settingsMaxTokensInput, settingsSaveButton, settingsCloseButton,
         settingsToolDropdown, // Added Tool Dropdown
         headerModelDisplay, footerModelDisplay, footerTempDisplay, newChatButton, tokenCountDisplay, passwordModalOverlay,
-        passwordForm, passwordInput, passwordSubmitButton, passwordError
+        passwordForm, passwordInput, passwordSubmitButton, passwordError,
+        limeAnalysisButton, limeCsvInput // Added LIME elements
     };
 
     let allElementsFound = true;
@@ -62,6 +65,94 @@ document.addEventListener('DOMContentLoaded', () => {
         enabledTool: 'search' // Default tool
     };
     let isAuthenticated = !window.passwordRequired;
+
+    // --- Utility Functions (Defined Early) ---
+    function scrollToBottom() {
+        // console.log("[scrollToBottom] Scrolling..."); // Can be noisy, uncomment if needed
+        if(chatContainer) chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function setLoading(isLoading) {
+        // console.log(`[setLoading] Setting loading state to: ${isLoading}`);
+        if (!sendButton || !sendIcon || !loadingIndicator) return;
+        if (isLoading) {
+            sendIcon.classList.add('hidden');
+            loadingIndicator.classList.remove('hidden');
+            sendButton.disabled = true;
+            sendButton.classList.add('cursor-wait');
+        } else {
+            sendIcon.classList.remove('hidden');
+            loadingIndicator.classList.add('hidden');
+            sendButton.classList.remove('cursor-wait');
+            updateSendButtonState(); // Re-evaluate based on content
+        }
+    }
+
+    // Debounce function
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+
+    // Function to Call the Token Counting Endpoint
+    async function updateTokenCount() {
+        if (!promptInput || !tokenCountDisplay || (!isAuthenticated && window.passwordRequired)) {
+            if (tokenCountDisplay) tokenCountDisplay.textContent = ''; // Clear if not authenticated or input missing
+            return;
+        }
+
+        const pendingText = promptInput.value;
+        const pendingFiles = [...attachedFiles]; // Get currently attached files
+
+        // Display a loading state immediately
+        tokenCountDisplay.textContent = 'Tokens: calculating...';
+
+        try {
+            const formData = new FormData();
+            formData.append('pending_text', pendingText);
+            pendingFiles.forEach(file => {
+                formData.append('pending_files', file, file.name);
+            });
+
+            const response = await fetch('/count_tokens', {
+                method: 'POST',
+                // Headers are set automatically by browser for FormData
+                body: formData
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+                throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            tokenCountDisplay.classList.remove('text-red-500'); // Clear error color on success
+            if (data.total_tokens !== undefined) {
+                tokenCountDisplay.textContent = `Tokens: ${data.total_tokens}`;
+            } else if (data.error) {
+                console.error("Token count error (from backend):", data.error);
+                tokenCountDisplay.textContent = 'Tokens: error';
+                tokenCountDisplay.classList.add('text-red-500');
+            } else {
+                 tokenCountDisplay.textContent = 'Tokens: unknown'; // Fallback
+            }
+
+        } catch (error) {
+            console.error("Error fetching token count:", error);
+            tokenCountDisplay.textContent = 'Tokens: error';
+            tokenCountDisplay.classList.add('text-red-500'); // Indicate error visually
+        }
+    }
+
+    // Create a Debounced Version of the Token Count Function
+    const debouncedTokenCount = debounce(updateTokenCount, 500); // 500ms delay
 
     // --- Configure Marked & Highlight.js ---
     if (typeof marked !== 'undefined') {
@@ -332,6 +423,69 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     } else if (window.passwordRequired) { console.error("Password form not found, but password protection is enabled!"); }
 
+    // --- LIME Analysis Button Logic ---
+    if (limeAnalysisButton && limeCsvInput) {
+        limeAnalysisButton.addEventListener('click', () => {
+            if (!isAuthenticated && window.passwordRequired) return; // Check auth
+            limeCsvInput.click(); // Trigger hidden file input
+        });
+
+        limeCsvInput.addEventListener('change', async (event) => {
+            const file = event.target.files ? event.target.files[0] : null;
+            if (!file) return;
+            if (!file.name.toLowerCase().endsWith('.csv')) {
+                alert("Please select a CSV file.");
+                event.target.value = ''; // Clear input
+                return;
+            }
+
+            console.log(`Selected LIME CSV: ${file.name}`);
+            limeAnalysisButton.disabled = true;
+            const originalIcon = limeAnalysisButton.innerHTML;
+            limeAnalysisButton.innerHTML = '<div class="loader" style="width: 16px; height: 16px; border-width: 2px;"></div>'; // Show loader
+
+            const formData = new FormData();
+            formData.append('lime_csv', file);
+
+            try {
+                // Clear existing chat UI immediately before sending request
+                // This prepares for the new session created by the backend
+                await triggerNewChat(false); // Pass false to prevent adding greeting immediately
+
+                const response = await fetch('/process_lime', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    console.log("LIME Processing Success:", data.message);
+                    // Display custom system message
+                    displayMessage(data.message, [], 'system');
+                } else {
+                    console.error("LIME Processing Error:", data.error || response.statusText);
+                    // Display error in chat
+                    displayMessage(`LIME Processing Failed: ${data.error || 'Unknown error'}`, [], 'error');
+                    // Add back the initial greeting if the process failed and cleared the chat
+                    addInitialGreeting();
+                }
+            } catch (error) {
+                console.error("Error during LIME processing request:", error);
+                displayMessage(`LIME Request Failed: ${error.message}`, [], 'error');
+                // Add back the initial greeting if the process failed and cleared the chat
+                addInitialGreeting();
+            } finally {
+                limeAnalysisButton.disabled = false;
+                limeAnalysisButton.innerHTML = originalIcon; // Restore icon
+                event.target.value = ''; // Clear file input
+                scrollToBottom(); // Ensure view is scrolled down after messages
+            }
+        });
+    } else {
+        console.warn("LIME Analysis button or input not found.");
+    }
+
     // Function to disable/enable main chat input area
     function disableChatInput(disabled) {
         if (promptInput) promptInput.disabled = disabled;
@@ -349,7 +503,8 @@ document.addEventListener('DOMContentLoaded', () => {
     else { console.error("New chat button not found"); }
 
     // Function to handle starting a new chat (called by button or settings change)
-    async function triggerNewChat() {
+    // Added optional flag to suppress initial greeting
+    async function triggerNewChat(addGreeting = true) {
         console.log("Triggering New Chat...");
         try {
             const response = await fetch('/clear_chat', { method: 'POST' });
@@ -358,11 +513,15 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) { console.error("Error calling /clear_chat endpoint:", error); }
 
         if (chatContainer) chatContainer.innerHTML = '';
-        addInitialGreeting();
+        if (addGreeting) {
+            addInitialGreeting(); // Only add greeting if flag is true
+        }
         clearFilePreviews();
         if (promptInput) { promptInput.value = ''; promptInput.style.height = 'auto'; }
         updateSendButtonState();
         console.log("Chat UI cleared.");
+        // Update token count (will likely be 0 after clearing)
+        debouncedTokenCount();
     }
 
     // --- Typing Indicator ---
@@ -501,146 +660,157 @@ document.addEventListener('DOMContentLoaded', () => {
          } else { // Model or Error roles
              // console.log(`[displayMessage] Processing ${role.toUpperCase()} role.`);
 
-             // --- Render Search Queries FIRST (if available) ---
-             if (grounding && grounding.web_search_queries && grounding.web_search_queries.length > 0) {
-                 // console.log("[displayMessage] Adding web search queries at the top.");
-                 searchQueryHTML += `<div class="search-query-info mb-3 pb-2 border-b border-gray-200 dark:border-gray-700 text-sm">`; // Subtle border
-                 searchQueryHTML += `<strong class="text-gray-600 dark:text-gray-400 font-medium"><i class="fas fa-search text-xs mr-1 opacity-80"></i> Searched for:</strong>`; // Slightly muted strong text
-                 grounding.web_search_queries.forEach(query => {
-                     // Changed query styling slightly - removed italic, slightly different bg/text
-                     searchQueryHTML += `<span class="ml-1.5 bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 rounded text-xs text-gray-700 dark:text-gray-300">${query.replace(/</g, "&lt;")}</span>`;
-                 });
-                 searchQueryHTML += `</div>`;
-             }
-
-             // --- Process Main Content Parts ---
-             if (parts && parts.length > 0) {
-                 // console.log(`[displayMessage] ${role.toUpperCase()} role: Processing ${parts.length} part(s).`);
-                 parts.forEach((part, index) => {
-                     // console.log(`[displayMessage] ${role.toUpperCase()} role: Processing part ${index + 1}/${parts.length}`, part);
-                     switch (part.type) {
-                         case 'text':
-                             if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-                                 // console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part. Input:`, part.content);
-                                 const unsafeHTML = marked.parse(part.content || ""); // Use configured marked
-                                 // console.log("Marked output (unsafeHTML):", unsafeHTML);
-                                 const safeHTML = DOMPurify.sanitize(unsafeHTML);
-                                 // console.log("DOMPurify output (safeHTML):", safeHTML);
-                                 contentHTML += `<div class="prose dark:prose-invert max-w-none">${safeHTML}</div>`;
-                             } else {
-                                 // console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part with fallback. Input:`, part.content);
-                                 contentHTML += `<p class="whitespace-pre-wrap">${(part.content || "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`; // Fallback
-                             }
-                             break;
-                         case 'executable_code':
-                             const langClass = part.language ? `language-${part.language.toLowerCase()}` : 'language-plaintext'; // Ensure lowercase lang
-                             const escapedCode = (part.code || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                             contentHTML += `<div class="prose dark:prose-invert max-w-none"><pre><code class="${langClass}">${escapedCode}</code></pre></div>`;
-                             break;
-                         case 'code_result':
-                             const escapedOutput = (part.output || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                             contentHTML += `<pre class="code-output bg-gray-100 dark:bg-gray-900 p-2 rounded text-sm whitespace-pre-wrap my-2"><strong>[Result: ${part.outcome || 'UNKNOWN'}]</strong>\n${escapedOutput}</pre>`;
-                             break;
-                         case 'image':
-                             contentHTML += `<img src="${part.url}" alt="Generated Image" class="max-w-full h-auto rounded my-2 block" onerror="this.alt='Error loading image'; this.style.display='none'; console.error('Error loading image:', this.src);">`; // Added onerror
-                             break;
-                         default:
-                             console.warn("Unknown part type received:", part.type);
-                             // Slightly improved display for unknown parts
-                             const partDetails = JSON.stringify(part, null, 2).replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                             contentHTML += `<div class="my-2 p-2 border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 rounded text-xs text-red-700 dark:text-red-300">
-                                              <p class="font-semibold mb-1">[Unsupported content type: ${part.type}]</p>
-                                              <pre class="whitespace-pre-wrap break-all">${partDetails}</pre>
-                                            </div>`;
-                     }
-                 });
-             } else if (!searchQueryHTML) { // Add placeholder if no parts AND no search query shown
-                 contentHTML += `<p>[No content received]</p>`;
-             }
-
-             // --- Render Other Grounding Info (Sources, Suggestions) at the bottom ---
-             if (grounding) {
-                 // console.log(`[displayMessage] ${role.toUpperCase()} role: Handling bottom grounding info.`);
-                 let addedSeparator = false;
-
-                 // Container for bottom grounding info (only add if needed)
-                 let bottomGroundingContainer = '';
-
-                 // Display Grounding Chunks (Sources)
-                 if (grounding.grounding_chunks && grounding.grounding_chunks.length > 0) {
-                     // console.log("[displayMessage] Adding grounding chunks (sources).");
-                     let sourcesHTML = `<div class="mb-2">`;
-                     sourcesHTML += `<strong class="text-gray-600 dark:text-gray-400 font-medium text-sm"><i class="fas fa-link text-xs mr-1 opacity-80"></i> Sources:</strong>`; // Use text-sm
-                     sourcesHTML += `<ul class="list-none pl-4 mt-1 text-xs space-y-1">`; // Slightly more indent
-                     grounding.grounding_chunks.forEach((chunk, index) => {
-                         const title = chunk.title ? chunk.title.replace(/</g, "&lt;") : 'Source';
-                         const domain = chunk.domain ? `<span class="text-gray-500 dark:text-gray-400 ml-1">(${chunk.domain.replace(/</g, "&lt;")})</span>` : '';
-                         sourcesHTML += `<li><a href="${chunk.uri}" target="_blank" rel="noopener noreferrer" class="text-blue-600 dark:text-blue-400 hover:underline">${title}</a>${domain}</li>`;
+             // --- Handle System Role --- New Block ---
+             if (role === 'system') {
+                bubbleDiv.classList.remove('bg-model-bg-light', 'dark:bg-model-bg-dark');
+                bubbleDiv.classList.add('bg-blue-50', 'dark:bg-blue-900/30', 'border', 'border-blue-200', 'dark:border-blue-700'); // Distinct styling
+                messageDiv.classList.remove('justify-start'); // Center align system message maybe?
+                messageDiv.classList.add('justify-center'); // Center it
+                bubbleDiv.classList.add('max-w-md'); // Limit width
+                bubbleDiv.classList.remove('max-w-xl', 'lg:max-w-3xl');
+                // Use the provided text directly, add an icon
+                contentHTML = `<p class="text-center text-blue-800 dark:text-blue-200"><i class="fas fa-check-circle mr-2 text-green-500"></i> ${text || 'Processing complete.'}</p>`;
+             } else {
+                 // --- Render Search Queries FIRST (if available) --- only for non-system roles
+                 if (grounding && grounding.web_search_queries && grounding.web_search_queries.length > 0) {
+                     // console.log("[displayMessage] Adding web search queries at the top.");
+                     searchQueryHTML += `<div class="search-query-info mb-3 pb-2 border-b border-gray-200 dark:border-gray-700 text-sm">`; // Subtle border
+                     searchQueryHTML += `<strong class="text-gray-600 dark:text-gray-400 font-medium"><i class="fas fa-search text-xs mr-1 opacity-80"></i> Searched for:</strong>`; // Slightly muted strong text
+                     grounding.web_search_queries.forEach(query => {
+                         // Changed query styling slightly - removed italic, slightly different bg/text
+                         searchQueryHTML += `<span class="ml-1.5 bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 rounded text-xs text-gray-700 dark:text-gray-300">${query.replace(/</g, "&lt;")}</span>`;
                      });
-                     sourcesHTML += `</ul></div>`;
-                     bottomGroundingContainer += sourcesHTML;
-                     addedSeparator = true;
+                     searchQueryHTML += `</div>`;
                  }
 
-                 // Display Search Suggestions (Rendered Content)
-                 if (grounding.search_suggestions_html) {
-                     // console.log("[displayMessage] Adding search suggestions HTML.");
-                     let suggestionsHTML = `<div class="search-suggestions">`;
-                     if(addedSeparator) suggestionsHTML = `<div class="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">` + suggestionsHTML; // Use subtle border
-
-                     suggestionsHTML += `<strong class="text-gray-600 dark:text-gray-400 font-medium text-sm block mb-1"><i class="fas fa-lightbulb text-xs mr-1 opacity-80"></i> Related:</strong>`; // Use text-sm
-                     // IMPORTANT: Insert HTML directly - Assume safe from Google
-                     suggestionsHTML += grounding.search_suggestions_html;
-                     suggestionsHTML += `</div>`;
-                     bottomGroundingContainer += suggestionsHTML;
-                     addedSeparator = true; // Ensure separator added if *only* suggestions exist
+                 // --- Process Main Content Parts ---
+                 if (parts && parts.length > 0) {
+                     // console.log(`[displayMessage] ${role.toUpperCase()} role: Processing ${parts.length} part(s).`);
+                     parts.forEach((part, index) => {
+                         // console.log(`[displayMessage] ${role.toUpperCase()} role: Processing part ${index + 1}/${parts.length}`, part);
+                         switch (part.type) {
+                             case 'text':
+                                 if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+                                     // console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part. Input:`, part.content);
+                                     const unsafeHTML = marked.parse(part.content || ""); // Use configured marked
+                                     // console.log("Marked output (unsafeHTML):", unsafeHTML);
+                                     const safeHTML = DOMPurify.sanitize(unsafeHTML);
+                                     // console.log("DOMPurify output (safeHTML):", safeHTML);
+                                     contentHTML += `<div class="prose dark:prose-invert max-w-none">${safeHTML}</div>`;
+                                 } else {
+                                     // console.log(`[displayMessage] ${role.toUpperCase()} role: Handling text part with fallback. Input:`, part.content);
+                                     contentHTML += `<p class="whitespace-pre-wrap">${(part.content || "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`; // Fallback
+                                 }
+                                 break;
+                             case 'executable_code':
+                                 const langClass = part.language ? `language-${part.language.toLowerCase()}` : 'language-plaintext'; // Ensure lowercase lang
+                                 const escapedCode = (part.code || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                                 contentHTML += `<div class="prose dark:prose-invert max-w-none"><pre><code class="${langClass}">${escapedCode}</code></pre></div>`;
+                                 break;
+                             case 'code_result':
+                                 const escapedOutput = (part.output || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                                 contentHTML += `<pre class="code-output bg-gray-100 dark:bg-gray-900 p-2 rounded text-sm whitespace-pre-wrap my-2"><strong>[Result: ${part.outcome || 'UNKNOWN'}]</strong>\n${escapedOutput}</pre>`;
+                                 break;
+                             case 'image':
+                                 contentHTML += `<img src="${part.url}" alt="Generated Image" class="max-w-full h-auto rounded my-2 block" onerror="this.alt='Error loading image'; this.style.display='none'; console.error('Error loading image:', this.src);">`; // Added onerror
+                                 break;
+                             default:
+                                 console.warn("Unknown part type received:", part.type);
+                                 // Slightly improved display for unknown parts
+                                 const partDetails = JSON.stringify(part, null, 2).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                                 contentHTML += `<div class="my-2 p-2 border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 rounded text-xs text-red-700 dark:text-red-300">
+                                                  <p class="font-semibold mb-1">[Unsupported content type: ${part.type}]</p>
+                                                  <pre class="whitespace-pre-wrap break-all">${partDetails}</pre>
+                                                </div>`;
+                         }
+                     });
+                 } else if (!searchQueryHTML) { // Add placeholder if no parts AND no search query shown
+                     contentHTML += `<p>[No content received]</p>`;
                  }
 
-                 // Add the container only if it has content
-                 if(bottomGroundingContainer) {
-                     // Added subtle background and padding to the grounding area
-                     otherGroundingHTML = `<div class="grounding-info mt-4 pt-3 px-3 pb-1 rounded-b-lg bg-gray-50 dark:bg-gray-800/30 border-t border-gray-200 dark:border-gray-700 text-sm">${bottomGroundingContainer}</div>`;
+                 // --- Render Other Grounding Info (Sources, Suggestions) at the bottom ---
+                 if (grounding) {
+                     // console.log(`[displayMessage] ${role.toUpperCase()} role: Handling bottom grounding info.`);
+                     let addedSeparator = false;
+
+                     // Container for bottom grounding info (only add if needed)
+                     let bottomGroundingContainer = '';
+
+                     // Display Grounding Chunks (Sources)
+                     if (grounding.grounding_chunks && grounding.grounding_chunks.length > 0) {
+                         // console.log("[displayMessage] Adding grounding chunks (sources).");
+                         let sourcesHTML = `<div class="mb-2">`;
+                         sourcesHTML += `<strong class="text-gray-600 dark:text-gray-400 font-medium text-sm"><i class="fas fa-link text-xs mr-1 opacity-80"></i> Sources:</strong>`; // Use text-sm
+                         sourcesHTML += `<ul class="list-none pl-4 mt-1 text-xs space-y-1">`; // Slightly more indent
+                         grounding.grounding_chunks.forEach((chunk, index) => {
+                             const title = chunk.title ? chunk.title.replace(/</g, "&lt;") : 'Source';
+                             const domain = chunk.domain ? `<span class="text-gray-500 dark:text-gray-400 ml-1">(${chunk.domain.replace(/</g, "&lt;")})</span>` : '';
+                             sourcesHTML += `<li><a href="${chunk.uri}" target="_blank" rel="noopener noreferrer" class="text-blue-600 dark:text-blue-400 hover:underline">${title}</a>${domain}</li>`;
+                         });
+                         sourcesHTML += `</ul></div>`;
+                         bottomGroundingContainer += sourcesHTML;
+                         addedSeparator = true;
+                     }
+
+                     // Display Search Suggestions (Rendered Content)
+                     if (grounding.search_suggestions_html) {
+                         // console.log("[displayMessage] Adding search suggestions HTML.");
+                         let suggestionsHTML = `<div class="search-suggestions">`;
+                         if(addedSeparator) suggestionsHTML = `<div class="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">` + suggestionsHTML; // Use subtle border
+
+                         suggestionsHTML += `<strong class="text-gray-600 dark:text-gray-400 font-medium text-sm block mb-1"><i class="fas fa-lightbulb text-xs mr-1 opacity-80"></i> Related:</strong>`; // Use text-sm
+                         // IMPORTANT: Insert HTML directly - Assume safe from Google
+                         suggestionsHTML += grounding.search_suggestions_html;
+                         suggestionsHTML += `</div>`;
+                         bottomGroundingContainer += suggestionsHTML;
+                         addedSeparator = true; // Ensure separator added if *only* suggestions exist
+                     }
+
+                     // Add the container only if it has content
+                     if(bottomGroundingContainer) {
+                         // Added subtle background and padding to the grounding area
+                         otherGroundingHTML = `<div class="grounding-info mt-4 pt-3 px-3 pb-1 rounded-b-lg bg-gray-50 dark:bg-gray-800/30 border-t border-gray-200 dark:border-gray-700 text-sm">${bottomGroundingContainer}</div>`;
+                     }
+                 }
+
+                 // Finish Reason (Append after primary content, before grounding info)
+                 if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS' && finishReason !== 'FINISH_REASON_UNSPECIFIED') {
+                     // console.log("[displayMessage] Adding Finish Reason.");
+                     // Append finish reason to contentHTML *before* other grounding info is added. Added border-top.
+                     contentHTML += `<p class="text-xs text-gray-500 dark:text-gray-400 mt-2 pt-1 border-t border-gray-200 dark:border-gray-700">Finish Reason: ${finishReason}</p>`;
                  }
              }
 
-             // Finish Reason (Append after primary content, before grounding info)
-             if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS' && finishReason !== 'FINISH_REASON_UNSPECIFIED') {
-                 // console.log("[displayMessage] Adding Finish Reason.");
-                 // Append finish reason to contentHTML *before* other grounding info is added. Added border-top.
-                 contentHTML += `<p class="text-xs text-gray-500 dark:text-gray-400 mt-2 pt-1 border-t border-gray-200 dark:border-gray-700">Finish Reason: ${finishReason}</p>`;
+             // Error Styling
+             if (role === 'error') {
+                 // console.log("[displayMessage] Applying error styling.");
+                  bubbleDiv.classList.add('bg-red-100', 'dark:bg-red-900', 'text-red-700', 'dark:text-red-300');
              }
-         }
 
-         // Error Styling
-         if (role === 'error') {
-             // console.log("[displayMessage] Applying error styling.");
-              bubbleDiv.classList.add('bg-red-100', 'dark:bg-red-900', 'text-red-700', 'dark:text-red-300');
-         }
+             // Set bubble content (main content + grounding info)
+             // console.log("[displayMessage] Setting bubble innerHTML. searchQueryHTML:", searchQueryHTML);
+             // console.log("[displayMessage] Setting bubble innerHTML. contentHTML:", contentHTML);
+             // console.log("[displayMessage] Setting bubble innerHTML. otherGroundingHTML:", otherGroundingHTML);
+             bubbleDiv.innerHTML = searchQueryHTML + contentHTML + otherGroundingHTML;
+             messageDiv.appendChild(bubbleDiv);
+             chatContainer.appendChild(messageDiv);
 
-         // Set bubble content (main content + grounding info)
-         // console.log("[displayMessage] Setting bubble innerHTML. searchQueryHTML:", searchQueryHTML);
-         // console.log("[displayMessage] Setting bubble innerHTML. contentHTML:", contentHTML);
-         // console.log("[displayMessage] Setting bubble innerHTML. otherGroundingHTML:", otherGroundingHTML);
-         bubbleDiv.innerHTML = searchQueryHTML + contentHTML + otherGroundingHTML;
-         messageDiv.appendChild(bubbleDiv);
-         chatContainer.appendChild(messageDiv);
+             // console.log("[displayMessage] Applying highlighting and copy buttons if needed.");
 
-         // console.log("[displayMessage] Applying highlighting and copy buttons if needed.");
-
-         // Apply Syntax Highlighting and Add Copy Buttons AFTER rendering
-         if (role === 'model') { // Only apply to model responses now
-             try {
-                 if (typeof hljs !== 'undefined') {
-                     highlightCodeInElement(bubbleDiv);
+             // Apply Syntax Highlighting and Add Copy Buttons AFTER rendering
+             if (role === 'model') { // Only apply to model responses now
+                 try {
+                     if (typeof hljs !== 'undefined') {
+                         highlightCodeInElement(bubbleDiv);
+                     }
+                     // addCopyButtonsToCodeBlocks(bubbleDiv);
+                 } catch(e) {
+                     console.error("Error applying highlighting or copy buttons:", e);
                  }
-                 // addCopyButtonsToCodeBlocks(bubbleDiv);
-             } catch(e) {
-                 console.error("Error applying highlighting or copy buttons:", e);
              }
-         }
 
-         // console.log("[displayMessage] Scrolling to bottom.");
-         scrollToBottom();
+             // console.log("[displayMessage] Scrolling to bottom.");
+             scrollToBottom();
     }
 
     // --- Apply Syntax Highlighting ---
@@ -784,74 +954,9 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     } else { console.error("Prompt input not found for keydown listener"); }
 
-    // --- Debounce Function Utility ---
-    function debounce(func, wait) {
-        let timeout;
-        return function executedFunction(...args) {
-            const later = () => {
-                clearTimeout(timeout);
-                func(...args);
-            };
-            clearTimeout(timeout);
-            timeout = setTimeout(later, wait);
-        };
-    };
-
-    // --- Function to Call the Token Counting Endpoint ---
-    async function updateTokenCount() {
-        if (!promptInput || !tokenCountDisplay || (!isAuthenticated && window.passwordRequired)) {
-            if (tokenCountDisplay) tokenCountDisplay.textContent = ''; // Clear if not authenticated or input missing
-            return;
-        }
-
-        const pendingText = promptInput.value;
-        const pendingFiles = [...attachedFiles]; // Get currently attached files
-
-        // Display a loading state immediately
-        tokenCountDisplay.textContent = 'Tokens: calculating...';
-
-        try {
-            const formData = new FormData();
-            formData.append('pending_text', pendingText);
-            pendingFiles.forEach(file => {
-                formData.append('pending_files', file, file.name);
-            });
-
-            const response = await fetch('/count_tokens', {
-                method: 'POST',
-                // Headers are set automatically by browser for FormData
-                body: formData
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-                throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-            }
-
-            const data = await response.json();
-            if (data.total_tokens !== undefined) {
-                tokenCountDisplay.textContent = `Tokens: ${data.total_tokens}`;
-            } else if (data.error) {
-                console.error("Token count error (from backend):", data.error);
-                tokenCountDisplay.textContent = 'Tokens: error';
-                tokenCountDisplay.classList.add('text-red-500');
-            } else {
-                 tokenCountDisplay.textContent = 'Tokens: unknown'; // Fallback
-            }
-
-        } catch (error) {
-            console.error("Error fetching token count:", error);
-            tokenCountDisplay.textContent = 'Tokens: error';
-            tokenCountDisplay.classList.add('text-red-500'); // Indicate error visually
-        }
-    }
-
-    // --- Create a Debounced Version of the Token Count Function ---
-    const debouncedTokenCount = debounce(updateTokenCount, 500); // 500ms delay
-
     // --- Initial Token Count on Load (if Authenticated) ---
     if (isAuthenticated) {
         updateTokenCount();
     }
 
-}); // End DOMContentLoaded
+}}); // End DOMContentLoaded
